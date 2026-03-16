@@ -105,3 +105,20 @@ class Persona:
         )
 
         return "\n\n".join(parts)
+
+    def to_dict(self) -> dict:
+        """Return persona data as a plain dict."""
+        return {
+            "name": self.name,
+            "bio": self.bio,
+            "writing_style": self.writing_style,
+            "vocabulary": list(self.vocabulary),
+            "topics": list(self.topics),
+            "example_messages": list(self.example_messages),
+        }
+
+    def apply_overrides(self, data: dict):
+        """Apply overrides from a dict (e.g. from config or web API)."""
+        for key in ("name", "bio", "writing_style", "vocabulary", "topics", "example_messages"):
+            if key in data:
+                setattr(self, key, data[key])

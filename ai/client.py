@@ -2,22 +2,21 @@ from __future__ import annotations
 
 import logging
 
-import vertexai
-from vertexai.generative_models import Content, GenerativeModel, Part
+from google import genai
+from google.genai import types
 
 log = logging.getLogger(__name__)
 
 
 class GeminiClient:
-    """Async client for Vertex AI Gemini inference."""
+    """Async client for Google AI Gemini inference."""
 
     def __init__(
         self,
-        project_id: str,
-        location: str = "us-central1",
-        model_name: str = "gemini-2.0-flash-001",
+        api_key: str,
+        model_name: str = "gemini-2.5-flash-lite",
     ):
-        vertexai.init(project=project_id, location=location)
+        self.client = genai.Client(api_key=api_key)
         self.model_name = model_name
 
     async def generate(
@@ -33,7 +32,7 @@ class GeminiClient:
         Gemini's ``system_instruction``; the rest become ``contents``.
         """
         system_prompt = None
-        contents: list[Content] = []
+        contents: list[types.Content] = []
 
         for msg in messages:
             role = msg["role"]
@@ -41,24 +40,23 @@ class GeminiClient:
             if role == "system":
                 system_prompt = text
             else:
-                gemini_role = "model" if role == "assistant" else "user"
+                genai_role = "model" if role == "assistant" else "user"
                 contents.append(
-                    Content(role=gemini_role, parts=[Part.from_text(text)])
+                    types.Content(role=genai_role, parts=[types.Part.from_text(text=text)])
                 )
 
-        model = GenerativeModel(
-            model_name=self.model_name,
-            system_instruction=[system_prompt] if system_prompt else None,
+        config = types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            max_output_tokens=max_tokens,
+            temperature=temperature,
         )
 
-        response = await model.generate_content_async(
-            contents,
-            generation_config={
-                "max_output_tokens": max_tokens,
-                "temperature": temperature,
-            },
+        response = await self.client.aio.models.generate_content(
+            model=self.model_name,
+            contents=contents,
+            config=config,
         )
         return response.text
 
     async def close(self):
-        """No persistent session to close for Vertex AI."""
+        """No persistent session to close."""

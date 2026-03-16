@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import threading
+import time
 
 from aiohttp import web
 import discord
@@ -11,53 +13,99 @@ from discord.ext import commands
 
 from ai.client import GeminiClient
 from ai.persona import Persona
-from ai.prompt_builder import build_messages
+from ai.prompt_builder import build_post_messages, build_interaction_messages
 from bot.config import Config
 from bot.webhook_manager import WebhookManager
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-)
+def _setup_logging() -> None:
+    """Use structured Cloud Logging on Cloud Run; plain text locally."""
+    if os.environ.get("K_SERVICE"):  # injected automatically by Cloud Run
+        try:
+            import google.cloud.logging as cloud_logging
+            cloud_logging.Client().setup_logging(log_level=logging.INFO)
+            return
+        except Exception:
+            pass  # fall through if SDK unavailable or auth fails
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+    )
+
+
+_setup_logging()
 log = logging.getLogger("cybot")
 
+GENERATION_TIMEOUT_SECONDS = 75
 
-# ── Cloud Run health-check server ───────────────────────────────────────────
-def _start_health_server():
-    """Run a tiny HTTP server on $PORT so Cloud Run knows the container is alive."""
+_URL_RE = re.compile(
+    r'https?://[^\s<>\"\')]+', re.IGNORECASE
+)
+
+
+def _extract_urls(text: str) -> list[str]:
+    """Return all HTTP(S) URLs found in text."""
+    return _URL_RE.findall(text)
+
+
+def _strip_urls(text: str) -> str:
+    """Remove all URLs from text and clean up leftover whitespace."""
+    cleaned = _URL_RE.sub('', text)
+    cleaned = re.sub(r'[ \t]+\n', '\n', cleaned)
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+    return cleaned
+
+
+def _surface_links(text: str, extra_links: list[str] | None = None) -> str:
+    """Remove all URLs from the body and append them at the end on their own
+    lines so Discord can generate embeds.  ``extra_links`` are URLs sourced
+    from the original prompt that must always appear."""
+    links = _extract_urls(text)
+    if extra_links:
+        seen = set(links)
+        for link in extra_links:
+            if link not in seen:
+                links.append(link)
+                seen.add(link)
+    if not links:
+        return text
+    cleaned = _strip_urls(text)
+    return cleaned + '\n' + '\n'.join(links)
+
+
+# ── Web server (health check + admin UI) ────────────────────────────────────
+def _start_web_server(cfg: Config, persona: Persona):
+    """Run the web server on $PORT for Cloud Run health check + admin UI."""
+    from bot.web import create_app
+
     port = int(os.environ.get("PORT", 8080))
-
-    async def _health(_request: web.Request) -> web.Response:
-        return web.Response(text="ok")
-
-    app = web.Application()
-    app.router.add_get("/", _health)
-
+    app = create_app(cfg, persona)
     runner = web.AppRunner(app)
     loop = asyncio.new_event_loop()
     loop.run_until_complete(runner.setup())
     site = web.TCPSite(runner, "0.0.0.0", port)
     loop.run_until_complete(site.start())
-    log.info("Health-check server listening on port %d", port)
+    log.info("Web server listening on port %d", port)
     loop.run_forever()
 
 
 class CyBot(commands.Bot):
     """The CyBot Discord bot."""
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, persona: Persona):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
 
         self.cfg = cfg
         self.webhooks = WebhookManager(cfg)
-        self.persona = Persona()
+        self.persona = persona
         self.gemini = GeminiClient(
-            project_id=cfg.gcp_project_id,
-            location=cfg.gcp_location,
+            api_key=cfg.gemini_api_key,
             model_name=cfg.gemini_model,
         )
+        # Rate-limit tracking for interaction replies: user_id -> last reply timestamp
+        self._interaction_cooldowns: dict[int, float] = {}
+        self.cfg._interaction_cooldowns = self._interaction_cooldowns
 
     async def setup_hook(self):
         await self.load_extension("bot.cogs.admin")
@@ -65,16 +113,206 @@ class CyBot(commands.Bot):
     async def on_ready(self):
         log.info("Logged in as %s (ID: %s)", self.user, self.user.id)
         log.info("Active channels: %s", self.cfg.active_channels)
+        # Use the bot's own avatar for webhook messages if no override is set
+        if self.cfg.cy_avatar_url is None and self.user.avatar:
+            self.cfg.cy_avatar_url = self.user.avatar.url
+            log.info("Using bot avatar for webhooks: %s", self.cfg.cy_avatar_url)
         # Sync slash commands to every guild for instant registration
         for guild in self.guilds:
             self.tree.copy_global_to(guild=guild)
             synced = await self.tree.sync(guild=guild)
             log.info("Synced %d commands to guild %s", len(synced), guild.id)
+        # Populate channel/role info for web API
+        self._populate_guild_info()
 
+    def _populate_guild_info(self):
+        """Store channel/role info from all guilds for the web API."""
+        channels = []
+        roles = []
+        seen_roles: set[int] = set()
+        for guild in self.guilds:
+            for ch in guild.text_channels:
+                channels.append({"id": str(ch.id), "name": ch.name, "guild": guild.name})
+            for role in guild.roles:
+                if role.id not in seen_roles and not role.managed:
+                    roles.append({"id": str(role.id), "name": role.name, "color": str(role.color)})
+                    seen_roles.add(role.id)
+        self.cfg._available_channels = channels
+        self.cfg._available_roles = roles
+
+    async def on_guild_channel_create(self, channel):
+        if isinstance(channel, discord.TextChannel):
+            self.cfg._available_channels.append(
+                {"id": str(channel.id), "name": channel.name, "guild": channel.guild.name}
+            )
+
+    async def on_guild_channel_delete(self, channel):
+        self.cfg._available_channels = [
+            c for c in self.cfg._available_channels if c["id"] != str(channel.id)
+        ]
+
+    async def on_guild_role_create(self, role):
+        if not role.managed:
+            self.cfg._available_roles.append(
+                {"id": str(role.id), "name": role.name, "color": str(role.color)}
+            )
+
+    async def on_guild_role_delete(self, role):
+        self.cfg._available_roles = [
+            r for r in self.cfg._available_roles if r["id"] != str(role.id)
+        ]
+
+    async def on_guild_role_update(self, before, after):
+        for r in self.cfg._available_roles:
+            if r["id"] == str(after.id):
+                r["name"] = after.name
+                r["color"] = str(after.color)
+                break
+
+    def _get_user_permission(self, member: discord.Member, perm: str) -> bool:
+        """Check a permission for a member based on their roles.
+
+        Uses 'allow wins' model: if any role explicitly allows, it's granted
+        even if another role explicitly denies.
+        """
+        allow = False
+        deny = False
+        for role in member.roles:
+            role_perms = self.cfg.role_permissions.get(str(role.id))
+            if role_perms and perm in role_perms:
+                val = role_perms[perm]
+                if val is True:
+                    allow = True
+                elif val is False:
+                    deny = True
+        if allow:
+            return True
+        if deny:
+            return False
+        return self.cfg.default_permissions.get(perm, False)
+
+    async def generate_post(self, prompt: str) -> str:
+        """Generate a post message as Cy from an admin prompt."""
+        prompt_links = _extract_urls(prompt)
+        # Strip URLs from prompt so AI doesn't mangle them
+        clean_prompt = _strip_urls(prompt) if prompt_links else prompt
+        ps = self.cfg.post_settings
+        messages = build_post_messages(
+            self.persona, clean_prompt, ps.get("system_prompt", ""),
+            exclusion_list=self.cfg.exclusion_list,
+        )
+        text = await self.gemini.generate(
+            messages,
+            max_tokens=ps.get("max_tokens", 512),
+            temperature=ps.get("temperature", 0.8),
+        )
+        return _surface_links(text, extra_links=prompt_links)
+
+    async def generate_interaction(self, user_message: str, user_name: str) -> str:
+        """Generate an interaction reply to a user's @Cy message."""
+        prompt_links = _extract_urls(user_message)
+        clean_msg = _strip_urls(user_message) if prompt_links else user_message
+        isettings = self.cfg.interaction_settings
+        messages = build_interaction_messages(
+            self.persona, clean_msg, user_name,
+            isettings.get("system_prompt", ""),
+            exclusion_list=self.cfg.exclusion_list,
+        )
+        text = await self.gemini.generate(
+            messages,
+            max_tokens=isettings.get("max_tokens", 256),
+            temperature=isettings.get("temperature", 0.9),
+        )
+        return _surface_links(text, extra_links=prompt_links)
+
+    # Keep old name as alias for admin cog compatibility
     async def generate(self, prompt: str) -> str:
-        """Generate a message as Cy from a prompt string."""
-        messages = build_messages(self.persona, prompt)
-        return await self.gemini.generate(messages)
+        return await self.generate_post(prompt)
+
+    async def on_message(self, message: discord.Message):
+        """Handle @Cy mentions in the interaction channel."""
+        # Ignore own messages and bot messages
+        if message.author.bot:
+            return
+        # Check if interactions are enabled
+        isettings = self.cfg.interaction_settings
+        if not isettings.get("enabled", False):
+            return
+        interaction_channel = isettings.get("channel_id")
+        if not interaction_channel or message.channel.id != interaction_channel:
+            return
+        # Must mention the bot
+        if self.user not in message.mentions:
+            return
+
+        # Permission check: can this user interact?
+        if isinstance(message.author, discord.Member):
+            if not self._get_user_permission(message.author, "can_interact"):
+                return
+
+        # Rate-limit check
+        user_id = message.author.id
+        now = time.time()
+        cooldown_secs = isettings.get("rate_limit_seconds", 300)
+        # Check bypass_cooldown permission
+        bypass_cooldown = False
+        if isinstance(message.author, discord.Member):
+            bypass_cooldown = self._get_user_permission(message.author, "bypass_cooldown")
+        if not bypass_cooldown and cooldown_secs > 0:
+            last_used = self._interaction_cooldowns.get(user_id, 0)
+            if now - last_used < cooldown_secs:
+                remaining = int(cooldown_secs - (now - last_used))
+                await message.reply(
+                    f"Slow down! You can interact again in {remaining}s.",
+                    mention_author=False,
+                )
+                return
+
+        self._interaction_cooldowns[user_id] = now
+
+        # Strip the bot mention from the message content
+        clean_content = message.content
+        for mention_str in (f"<@{self.user.id}>", f"<@!{self.user.id}>"):
+            clean_content = clean_content.replace(mention_str, "").strip()
+
+        if not clean_content:
+            clean_content = "say something random"
+
+        log.info(
+            "interaction: user=%s channel=%s msg=%r",
+            message.author, message.channel.id, clean_content[:120],
+        )
+
+        # Use reaction indicator instead of typing (typing persists with webhooks)
+        try:
+            await message.add_reaction('\U0001f4ad')
+        except discord.HTTPException:
+            pass
+
+        try:
+            try:
+                text = await asyncio.wait_for(
+                    self.generate_interaction(clean_content, message.author.display_name),
+                    timeout=GENERATION_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                log.warning("interaction timeout: user=%s", message.author)
+                await message.reply("hmm gimme a sec... actually nvm brain lagged out", mention_author=False)
+                return
+            except Exception:
+                log.exception("interaction error: user=%s", message.author)
+                return
+        finally:
+            try:
+                await message.remove_reaction('\U0001f4ad', self.user)
+            except discord.HTTPException:
+                pass
+
+        # Post via webhook so it appears as Cy
+        if message.channel.id in self.cfg.active_channels:
+            await self.webhooks.send_as_cy(message.channel, text)
+        else:
+            await message.reply(text, mention_author=False)
 
     async def close(self):
         await self.gemini.close()
@@ -82,12 +320,18 @@ class CyBot(commands.Bot):
 
 
 def main():
-    # Start health-check server in a daemon thread for Cloud Run
-    health_thread = threading.Thread(target=_start_health_server, daemon=True)
-    health_thread.start()
-
     cfg = Config()
-    bot = CyBot(cfg)
+    persona = Persona()
+    if cfg.persona_data:
+        persona.apply_overrides(cfg.persona_data)
+
+    # Start web server in a daemon thread for Cloud Run
+    web_thread = threading.Thread(
+        target=_start_web_server, args=(cfg, persona), daemon=True
+    )
+    web_thread.start()
+
+    bot = CyBot(cfg, persona)
     bot.run(cfg.bot_token, log_handler=None)
 
 
