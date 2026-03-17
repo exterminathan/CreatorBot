@@ -42,6 +42,23 @@ _URL_RE = re.compile(
     r'https?://[^\s<>\"\')]+', re.IGNORECASE
 )
 
+_MAX_EXCLUSION_RETRIES = 3
+
+
+def _find_exclusion_violations(text: str, exclusion_list: list[dict]) -> list[str]:
+    """Return topics (severity >= 2) whose word/phrase appears in text."""
+    violations: list[str] = []
+    for entry in exclusion_list:
+        if entry.get("severity", 3) < 2:
+            continue  # severity 1 = explicitly allowed
+        topic = entry.get("topic", "").strip()
+        if not topic:
+            continue
+        pattern = r'\b' + re.escape(topic) + r'\b'
+        if re.search(pattern, text, re.IGNORECASE):
+            violations.append(topic)
+    return violations
+
 
 def _extract_urls(text: str) -> list[str]:
     """Return all HTTP(S) URLs found in text."""
@@ -243,13 +260,23 @@ class CyBot(commands.Bot):
         messages = build_post_messages(
             self.persona, clean_prompt, ps.get("system_prompt", ""),
             exclusion_list=self.cfg.exclusion_list,
+            slang_dict=self.cfg.slang_dict,
             template=self.cfg.system_prompt_template,
         )
-        text = await self.gemini.generate(
-            messages,
-            max_tokens=ps.get("max_tokens", 512),
-            temperature=ps.get("temperature", 0.8),
-        )
+        text = ""
+        for attempt in range(_MAX_EXCLUSION_RETRIES):
+            text = await self.gemini.generate(
+                messages,
+                max_tokens=ps.get("max_tokens", 512),
+                temperature=ps.get("temperature", 0.8),
+            )
+            violations = _find_exclusion_violations(text, self.cfg.exclusion_list)
+            if not violations:
+                break
+            log.warning(
+                "generate_post exclusion violation (attempt %d/%d): %s",
+                attempt + 1, _MAX_EXCLUSION_RETRIES, violations,
+            )
         return _surface_links(text, extra_links=prompt_links)
 
     async def generate_interaction(self, user_message: str, user_name: str) -> str:
@@ -261,13 +288,23 @@ class CyBot(commands.Bot):
             self.persona, clean_msg, user_name,
             isettings.get("system_prompt", ""),
             exclusion_list=self.cfg.exclusion_list,
+            slang_dict=self.cfg.slang_dict,
             template=self.cfg.system_prompt_template,
         )
-        text = await self.gemini.generate(
-            messages,
-            max_tokens=isettings.get("max_tokens", 256),
-            temperature=isettings.get("temperature", 0.9),
-        )
+        text = ""
+        for attempt in range(_MAX_EXCLUSION_RETRIES):
+            text = await self.gemini.generate(
+                messages,
+                max_tokens=isettings.get("max_tokens", 256),
+                temperature=isettings.get("temperature", 0.9),
+            )
+            violations = _find_exclusion_violations(text, self.cfg.exclusion_list)
+            if not violations:
+                break
+            log.warning(
+                "generate_interaction exclusion violation (attempt %d/%d): %s",
+                attempt + 1, _MAX_EXCLUSION_RETRIES, violations,
+            )
         return _surface_links(text, extra_links=prompt_links)
 
     # Keep old name as alias for admin cog compatibility
@@ -305,15 +342,23 @@ class CyBot(commands.Bot):
         isettings = self.cfg.interaction_settings
         if not isettings.get("enabled", False):
             return
-        interaction_channel = isettings.get("channel_id")
-        if not interaction_channel or message.channel.id != interaction_channel:
+        # Check per-channel permission (default: enabled)
+        chperms = self.cfg.channel_permissions.get(str(message.channel.id), {})
+        if not chperms.get("can_interact", True):
+            return
+        # If specific interaction channels are configured, restrict to them
+        interaction_channels = isettings.get("channel_ids", [])
+        if interaction_channels and message.channel.id not in interaction_channels:
             return
         # Must mention the bot
         if self.user not in message.mentions:
             return
 
+        # Admin users always bypass permission and cooldown checks
+        is_admin = message.author.id in self.cfg.admin_user_ids
+
         # Permission check: can this user interact?
-        if isinstance(message.author, discord.Member):
+        if not is_admin and isinstance(message.author, discord.Member):
             if not self._get_user_permission(message.author, "can_interact"):
                 return
 
@@ -321,9 +366,9 @@ class CyBot(commands.Bot):
         user_id = message.author.id
         now = time.time()
         cooldown_secs = isettings.get("rate_limit_seconds", 300)
-        # Check bypass_cooldown permission
-        bypass_cooldown = False
-        if isinstance(message.author, discord.Member):
+        # Admins and members with bypass_cooldown skip the rate limit
+        bypass_cooldown = is_admin
+        if not bypass_cooldown and isinstance(message.author, discord.Member):
             bypass_cooldown = self._get_user_permission(message.author, "bypass_cooldown")
         if not bypass_cooldown and cooldown_secs > 0:
             last_used = self._interaction_cooldowns.get(user_id, 0)
@@ -349,6 +394,20 @@ class CyBot(commands.Bot):
             "interaction: user=%s channel=%s msg=%r",
             message.author, message.channel.id, clean_content[:120],
         )
+
+        # Pre-LLM exclusion check: if the user's message directly mentions an
+        # excluded topic (sev >= 2), skip generation entirely and use a neutral
+        # fallback.  This ensures all excluded topics are handled identically
+        # regardless of any model-level bias.
+        if _find_exclusion_violations(clean_content, self.cfg.exclusion_list):
+            text = self._fallback_response()
+            mention = f"<@{message.author.id}>"
+            text = f"{mention} {text}"
+            if message.channel.id in self.cfg.active_channels:
+                await self.webhooks.send_as_cy(message.channel, text)
+            else:
+                await message.reply(text, mention_author=False)
+            return
 
         # Use reaction indicator instead of typing (typing persists with webhooks)
         try:

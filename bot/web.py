@@ -95,13 +95,15 @@ async def get_config(request: web.Request) -> web.Response:
         "post_settings": cfg.post_settings,
         "interaction_settings": {
             **cfg.interaction_settings,
-            "channel_id": str(cfg.interaction_settings["channel_id"]) if cfg.interaction_settings.get("channel_id") else None,
+            "channel_ids": [str(c) for c in cfg.interaction_settings.get("channel_ids", [])],
         },
         "role_permissions": cfg.role_permissions,
         "default_permissions": cfg.default_permissions,
         "exclusion_list": cfg.exclusion_list,
+        "slang_dict": cfg.slang_dict,
         "default_responses": cfg.default_responses,
         "system_prompt_template": cfg.system_prompt_template,
+        "channel_permissions": cfg.channel_permissions,
         "bot_enabled": cfg.bot_enabled,
     })
 
@@ -138,9 +140,8 @@ async def put_config(request: web.Request) -> web.Response:
         isettings = body["interaction_settings"]
         if "enabled" in isettings:
             cfg.interaction_settings["enabled"] = bool(isettings["enabled"])
-        if "channel_id" in isettings:
-            val = isettings["channel_id"]
-            cfg.interaction_settings["channel_id"] = int(val) if val else None
+        if "channel_ids" in isettings:
+            cfg.interaction_settings["channel_ids"] = [int(v) for v in isettings["channel_ids"] if v]
         if "max_tokens" in isettings:
             cfg.interaction_settings["max_tokens"] = int(isettings["max_tokens"])
         if "temperature" in isettings:
@@ -161,8 +162,18 @@ async def put_config(request: web.Request) -> web.Response:
             if isinstance(e, dict) else {"topic": str(e), "severity": 3}
             for e in body["exclusion_list"]
         ]
+    if "channel_permissions" in body:
+        cfg.channel_permissions = {
+            str(k): dict(v) for k, v in body["channel_permissions"].items()
+            if isinstance(v, dict)
+        }
     if "default_responses" in body:
         cfg.default_responses = list(body["default_responses"])
+    if "slang_dict" in body:
+        cfg.slang_dict = {
+            str(k): str(v) for k, v in body["slang_dict"].items()
+            if str(k).strip() and str(v).strip()
+        }
     if "system_prompt_template" in body:
         cfg.system_prompt_template = str(body["system_prompt_template"])
     if "bot_enabled" in body:
@@ -241,6 +252,12 @@ async def bot_control(request: web.Request) -> web.Response:
         return web.json_response({"error": "Unknown action"}, status=400)
 
 
+@_require_auth
+async def get_status(request: web.Request) -> web.Response:
+    cfg = request.app["config"]
+    return web.json_response({"bot_enabled": cfg.bot_enabled})
+
+
 # ── App factory ─────────────────────────────────────────────────────────────
 
 def create_app(config, persona) -> web.Application:
@@ -265,6 +282,7 @@ def create_app(config, persona) -> web.Application:
     app.router.add_get("/api/roles", get_roles)
     app.router.add_post("/api/bot-control", bot_control)
     app.router.add_get("/api/preview_prompts", get_preview_prompts)
+    app.router.add_get("/api/status", get_status)
 
     if not config.web_password:
         pw = secrets.token_urlsafe(16)
@@ -449,6 +467,10 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
 .sev-btn.s1.active{background:#248046;border-color:#248046;color:#fff}
 .sev-btn.s2.active{background:#f0b232;border-color:#f0b232;color:#1e1f22}
 .sev-btn.s3.active{background:#da373c;border-color:#da373c;color:#fff}
+/* \u2500\u2500 Channel permission pills \u2500\u2500 */
+.chan-perm-btn{padding:2px 7px;border-radius:3px;border:1px solid transparent;font-size:10px;font-weight:700;letter-spacing:.04em;cursor:pointer;transition:background .15s,color .15s;margin-left:4px}
+.chan-perm-btn.active{background:#248046;color:#fff;border-color:#248046}
+.chan-perm-btn.inactive{background:var(--bg-light);color:var(--text-muted);border-color:var(--border)}
 </style>
 </head>
 <body>
@@ -467,6 +489,7 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
       <div class="sidebar-item" data-section="video-lines" onclick="showSection('video-lines')">Video Lines</div>
       <div class="sidebar-item" data-section="messages" onclick="showSection('messages')">Example Messages</div>
       <div class="sidebar-item" data-section="exclusions" onclick="showSection('exclusions')">Exclusions</div>
+      <div class="sidebar-item" data-section="slang" onclick="showSection('slang')">Slang</div>
       <div class="sidebar-item" data-section="default-responses" onclick="showSection('default-responses')">Default Responses</div>
       <div class="sidebar-item" data-section="system-prompts" onclick="showSection('system-prompts')">System Prompts</div>
       <hr class="sidebar-sep">
@@ -513,10 +536,10 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
       <!-- ── Channels ── -->
       <div id="section-channels" class="section">
         <h2 class="section-title">Channels</h2>
-        <p class="section-desc">Active channels where Cy can post. Click the star to set a channel as default (used when no channel is specified in /cy send).</p>
+        <p class="section-desc">Active channels where Cy can post. Star sets the default for /cy newpost. POST and INTERACT toggles control what actions each channel allows.</p>
         <div id="channel-list"></div>
         <div class="add-row">
-          <input type="text" id="add-channel-input" placeholder="Discord Channel ID">
+          <select id="add-channel-select" class="form-input"><option value="">&#8212; Select a channel &#8212;</option></select>
           <button class="btn btn-primary" onclick="addChannel()">Add</button>
         </div>
       </div>
@@ -597,6 +620,18 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
         </div>
       </div>
 
+      <!-- ── Slang ── -->
+      <div id="section-slang" class="section">
+        <h2 class="section-title">Slang Dictionary</h2>
+        <p class="section-desc">Define slang terms so Cy understands and responds to them correctly. Injected into the system prompt as a glossary. Changes save automatically.</p>
+        <div id="slang-list"></div>
+        <div class="add-row" style="margin-top:12px">
+          <input type="text" id="add-slang-word" placeholder="Slang word or phrase" style="flex:0 0 180px">
+          <input type="text" id="add-slang-def" placeholder="Definition / meaning">
+          <button class="btn btn-primary btn-sm" onclick="addSlangEntry()">Add</button>
+        </div>
+      </div>
+
       <!-- ── Default Responses ── -->
       <div id="section-default-responses" class="section">
         <h2 class="section-title">Default Responses</h2>
@@ -673,11 +708,15 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
           </label>
         </div>
         <div class="form-group">
-          <label class=\"form-label\">Interaction Channel</label>
-          <p class=\"form-hint\">The Discord channel where members can @Cy. Must also be in the active channels list.</p>
-          <select class=\"form-input\" id=\"interaction-channel-id\">
-            <option value=\"\">\\u2014 None \\u2014</option>
-          </select>
+          <label class="form-label">Interaction Channels</label>
+          <p class="form-hint">Channels where members can @Cy. Leave empty to allow all active channels. Each must also be in the active channels list.</p>
+          <div id="interaction-channels-list" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px"></div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select class="form-input" id="interaction-channel-add-select" style="flex:1">
+              <option value="">\\u2014 Add a channel \\u2014</option>
+            </select>
+            <button class="btn btn-sm" onclick="addInteractionChannel()" style="white-space:nowrap">Add</button>
+          </div>
         </div>
         <div class="form-group">
           <label class="form-label">Rate Limit (seconds)</label>
@@ -748,9 +787,20 @@ let token = sessionStorage.getItem('cybot_token');
 let config = {};
 let persona = {};
 
+const CHAN_PERMS = [
+  {key: 'can_post', label: 'POST', title: 'Allow /cy newpost to target this channel'},
+  {key: 'can_interact', label: 'INTERACT', title: 'Allow @Cy interaction replies in this channel'},
+];
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+const _dSavePost = debounce(savePostSettings, 800);
+const _dSaveInteraction = debounce(saveInteractionSettings, 800);
+const _dSavePersona = debounce(savePersona, 800);
+const _dSaveAdditive = debounce(saveAdditivePrompts, 800);
+
 window.addEventListener('DOMContentLoaded', async () => {
   if (!token) { location.href = '/admin'; return; }
   await loadData();
+  startStatusPolling();
 });
 
 async function api(method, path, body) {
@@ -784,7 +834,8 @@ async function renderAll() {
   renderGeneral(); renderAdmins(); renderChannels(); renderPersona(); renderMessages(); renderVideoLines();
   await renderSystemPrompts();
   renderPostSettings(); renderInteractionSettings(); renderLogging();
-  populateChannelDropdown(); renderDefaultPerms(); populateRoleSelect(); renderExclusions(); renderDefaultResponses();
+  populateChannelDropdown(); renderDefaultPerms(); populateRoleSelect(); renderExclusions(); renderSlang(); renderDefaultResponses();
+  setupAutoSave();
 }
 
 /* ── Navigation ── */
@@ -864,6 +915,38 @@ async function removeAdmin(uid) {
 /* ══════════════════════════════════════════════════════════════════════════
    Channels
    ══════════════════════════════════════════════════════════════════════════ */
+function channelName(cid) {
+  const ch = (window._channels || []).find(c => c.id === String(cid));
+  return ch ? '#' + ch.name + (ch.guild ? ' \\u00b7 ' + ch.guild : '') : '#' + cid;
+}
+
+function populateAddChannelDropdown() {
+  const sel = document.getElementById('add-channel-select');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">&#8212; Select a channel &#8212;</option>';
+  for (const ch of (window._channels || [])) {
+    if (config.active_channels.includes(ch.id)) continue;
+    const opt = document.createElement('option');
+    opt.value = ch.id;
+    opt.textContent = '#' + ch.name + (ch.guild ? ' (' + ch.guild + ')' : '');
+    sel.appendChild(opt);
+  }
+  if (prev) sel.value = prev;
+}
+
+function getChannelPerm(cid, key) {
+  return ((config.channel_permissions || {})[String(cid)] || {})[key] !== false;
+}
+
+async function setChannelPerm(cid, key, val) {
+  if (!config.channel_permissions) config.channel_permissions = {};
+  if (!config.channel_permissions[String(cid)]) config.channel_permissions[String(cid)] = {};
+  config.channel_permissions[String(cid)][key] = val;
+  renderChannels();
+  await api('PUT', '/api/config', {channel_permissions: config.channel_permissions});
+}
+
 function renderChannels() {
   const el = document.getElementById('channel-list');
   el.innerHTML = '';
@@ -871,16 +954,27 @@ function renderChannels() {
     const isDefault = (cid === config.default_channel_id);
     const item = document.createElement('div');
     item.className = 'list-item';
+    item.style.flexWrap = 'wrap';
     const left = document.createElement('div');
-    const idSpan = document.createElement('span');
-    idSpan.className = 'id-text';
-    idSpan.textContent = '# ' + cid;
-    left.appendChild(idSpan);
+    left.style.cssText = 'display:flex;align-items:center;gap:6px;flex:1;flex-wrap:wrap;min-width:0';
+    const nameSpan = document.createElement('span');
+    nameSpan.style.fontWeight = '500';
+    nameSpan.textContent = channelName(cid);
+    left.appendChild(nameSpan);
     if (isDefault) {
       const badge = document.createElement('span');
       badge.className = 'badge badge-default';
       badge.textContent = 'DEFAULT';
       left.appendChild(badge);
+    }
+    for (const {key, label, title} of CHAN_PERMS) {
+      const active = getChannelPerm(cid, key);
+      const btn = document.createElement('button');
+      btn.className = 'chan-perm-btn ' + (active ? 'active' : 'inactive');
+      btn.textContent = label;
+      btn.title = title;
+      btn.onclick = () => setChannelPerm(cid, key, !getChannelPerm(cid, key));
+      left.appendChild(btn);
     }
     item.appendChild(left);
     const actions = document.createElement('div');
@@ -899,17 +993,18 @@ function renderChannels() {
     item.appendChild(actions);
     el.appendChild(item);
   }
+  populateAddChannelDropdown();
 }
 
 async function addChannel() {
-  const input = document.getElementById('add-channel-input');
-  const id = input.value.trim();
-  if (!id || !/^\\d+$/.test(id)) return toast('Enter a valid numeric channel ID', 'error');
+  const sel = document.getElementById('add-channel-select');
+  const id = sel.value.trim();
+  if (!id) return toast('Select a channel first', 'error');
   if (config.active_channels.includes(id)) return toast('Channel already active', 'error');
   config.active_channels.push(id);
   const r = await api('PUT', '/api/config', {active_channels: config.active_channels});
   if (!r) { config.active_channels.pop(); return; }
-  input.value = '';
+  sel.value = '';
   renderChannels();
   toast('Channel added');
 }
@@ -1106,25 +1201,84 @@ async function savePostSettings() {
 function renderInteractionSettings() {
   const is_ = config.interaction_settings || {};
   document.getElementById('interaction-enabled').checked = !!is_.enabled;
-  document.getElementById('interaction-channel-id').value = is_.channel_id || '';
   document.getElementById('interaction-rate-limit').value = is_.rate_limit_seconds ?? 300;
   document.getElementById('interaction-max-tokens').value = is_.max_tokens ?? 256;
   document.getElementById('interaction-temperature').value = is_.temperature ?? 0.9;
+  renderInteractionChannelChips();
+}
+
+function renderInteractionChannelChips() {
+  const is_ = config.interaction_settings || {};
+  const ids = is_.channel_ids || [];
+  const container = document.getElementById('interaction-channels-list');
+  if (!container) return;
+  container.innerHTML = '';
+  if (ids.length === 0) {
+    const hint = document.createElement('span');
+    hint.style.cssText = 'font-size:12px;color:var(--text-muted);font-style:italic';
+    hint.textContent = 'All active channels';
+    container.appendChild(hint);
+    return;
+  }
+  for (const cid of ids) {
+    const ch = (window._channels || []).find(c => c.id === String(cid));
+    const label = ch ? '#' + ch.name + (ch.guild ? ' \u00b7 ' + ch.guild : '') : '#' + cid;
+    const chip = document.createElement('div');
+    chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-size:13px';
+    const text = document.createElement('span');
+    text.textContent = label;
+    const btn = document.createElement('button');
+    btn.textContent = '\u00d7';
+    btn.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:15px;line-height:1;padding:0 0 0 4px';
+    btn.onclick = () => removeInteractionChannel(String(cid));
+    chip.appendChild(text);
+    chip.appendChild(btn);
+    container.appendChild(chip);
+  }
+}
+
+async function addInteractionChannel() {
+  const sel = document.getElementById('interaction-channel-add-select');
+  const val = sel.value.trim();
+  if (!val) return;
+  const is_ = config.interaction_settings || {};
+  const ids = [...(is_.channel_ids || [])];
+  if (ids.includes(val)) { toast('Channel already added', 'error'); return; }
+  ids.push(val);
+  const r = await api('PUT', '/api/config', {interaction_settings: {channel_ids: ids}});
+  if (r) {
+    config.interaction_settings.channel_ids = ids;
+    sel.value = '';
+    renderInteractionChannelChips();
+    toast('Channel added');
+  }
+}
+
+async function removeInteractionChannel(cid) {
+  const is_ = config.interaction_settings || {};
+  const ids = (is_.channel_ids || []).filter(id => String(id) !== String(cid));
+  const r = await api('PUT', '/api/config', {interaction_settings: {channel_ids: ids}});
+  if (r) {
+    config.interaction_settings.channel_ids = ids;
+    renderInteractionChannelChips();
+    toast('Channel removed');
+  }
 }
 
 async function saveInteractionSettings() {
   const rl = parseInt(document.getElementById('interaction-rate-limit').value);
   const mt = parseInt(document.getElementById('interaction-max-tokens').value);
   const tp = parseFloat(document.getElementById('interaction-temperature').value);
-  const is_ = {
+  const is_ = config.interaction_settings || {};
+  const payload = {
     enabled: document.getElementById('interaction-enabled').checked,
-    channel_id: document.getElementById('interaction-channel-id').value.trim() || null,
+    channel_ids: is_.channel_ids || [],
     rate_limit_seconds: isNaN(rl) ? 300 : rl,
     max_tokens: isNaN(mt) ? 256 : mt,
     temperature: isNaN(tp) ? 0.9 : tp,
   };
-  const r = await api('PUT', '/api/config', {interaction_settings: is_});
-  if (r) { config.interaction_settings = is_; toast('Interaction settings saved'); }
+  const r = await api('PUT', '/api/config', {interaction_settings: payload});
+  if (r) { config.interaction_settings = {...(config.interaction_settings || {}), ...payload}; toast('Interaction settings saved'); }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -1210,14 +1364,13 @@ async function saveAdditivePrompts() {
    Channel Dropdown
    ══════════════════════════════════════════════════════════════════════════ */
 function populateChannelDropdown() {
-  const sel = document.getElementById('interaction-channel-id');
-  const current = config.interaction_settings?.channel_id || '';
-  sel.innerHTML = '<option value="">\\u2014 None \\u2014</option>';
+  const sel = document.getElementById('interaction-channel-add-select');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">\\u2014 Add a channel \\u2014</option>';
   for (const ch of (window._channels || [])) {
     const opt = document.createElement('option');
     opt.value = ch.id;
     opt.textContent = '#' + ch.name + (ch.guild ? ' (' + ch.guild + ')' : '');
-    if (ch.id === current) opt.selected = true;
     sel.appendChild(opt);
   }
 }
@@ -1399,6 +1552,72 @@ async function saveExclusions() {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
+   Slang
+   ══════════════════════════════════════════════════════════════════════════ */
+function renderSlang() {
+  const el = document.getElementById('slang-list');
+  el.innerHTML = '';
+  const entries = Object.entries(config.slang_dict || {});
+  if (entries.length === 0) {
+    const empty = document.createElement('p');
+    empty.style.cssText = 'color:var(--text-muted);font-size:14px;margin:0';
+    empty.textContent = 'No slang defined yet.';
+    el.appendChild(empty);
+    return;
+  }
+  for (const [word, def] of entries) {
+    const row = document.createElement('div');
+    row.className = 'list-item';
+    const left = document.createElement('div');
+    left.style.flex = '1';
+    const wordSpan = document.createElement('span');
+    wordSpan.style.cssText = 'font-weight:600;font-size:14px';
+    wordSpan.textContent = word;
+    const sep = document.createElement('span');
+    sep.style.cssText = 'color:var(--text-muted);margin:0 6px';
+    sep.textContent = '\u2014';
+    const defSpan = document.createElement('span');
+    defSpan.style.cssText = 'color:var(--text-secondary);font-size:13px';
+    defSpan.textContent = def;
+    left.appendChild(wordSpan);
+    left.appendChild(sep);
+    left.appendChild(defSpan);
+    row.appendChild(left);
+    const rm = document.createElement('button');
+    rm.className = 'btn btn-danger btn-sm';
+    rm.textContent = '\u2715';
+    rm.onclick = () => removeSlangEntry(word);
+    row.appendChild(rm);
+    el.appendChild(row);
+  }
+}
+
+async function addSlangEntry() {
+  const wordInput = document.getElementById('add-slang-word');
+  const defInput = document.getElementById('add-slang-def');
+  const word = wordInput.value.trim();
+  const def = defInput.value.trim();
+  if (!word || !def) return;
+  if (!config.slang_dict) config.slang_dict = {};
+  config.slang_dict[word] = def;
+  renderSlang();
+  wordInput.value = '';
+  defInput.value = '';
+  await saveSlang();
+}
+
+async function removeSlangEntry(word) {
+  if (config.slang_dict) delete config.slang_dict[word];
+  renderSlang();
+  await saveSlang();
+}
+
+async function saveSlang() {
+  const r = await api('PUT', '/api/config', {slang_dict: config.slang_dict || {}});
+  if (r) toast('Slang saved');
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
    Default Responses
    ══════════════════════════════════════════════════════════════════════════ */
 function renderDefaultResponses() {
@@ -1478,12 +1697,39 @@ function toast(msg, type) {
   setTimeout(() => el.remove(), 2600);
 }
 
+/* ── Auto-save ── */
+function setupAutoSave() {
+  const b = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('input', fn); };
+  const bc = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('change', fn); };
+  b('post-max-tokens', _dSavePost); b('post-temperature', _dSavePost);
+  bc('interaction-enabled', () => saveInteractionSettings());
+  b('interaction-rate-limit', _dSaveInteraction); b('interaction-max-tokens', _dSaveInteraction);
+  b('interaction-temperature', _dSaveInteraction);
+  bc('log-channel-id', () => saveLogging());
+  b('post-additive-prompt', _dSaveAdditive); b('interaction-additive-prompt', _dSaveAdditive);
+  b('persona-name', _dSavePersona); b('persona-bio', _dSavePersona); b('persona-style', _dSavePersona);
+}
+
+/* ── Status polling ── */
+function startStatusPolling() {
+  setInterval(async () => {
+    try {
+      const s = await api('GET', '/api/status');
+      if (!s) return;
+      if (s.bot_enabled !== config.bot_enabled) {
+        config.bot_enabled = s.bot_enabled;
+        renderGeneral();
+        toast(s.bot_enabled ? 'Bot started externally' : 'Bot stopped externally');
+      }
+    } catch {}
+  }, 15000);
+}
+
 /* ── Global Enter key for add inputs ── */
 document.addEventListener('keydown', e => {
   if (e.key !== 'Enter') return;
   const id = e.target.id;
   if (id === 'add-admin-input') addAdmin();
-  else if (id === 'add-channel-input') addChannel();
   else if (id === 'add-vocab-input') addVocab();
   else if (id === 'add-fact-input') addFact();
   else if (id === 'add-exclusion-input') addExclusion();

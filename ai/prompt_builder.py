@@ -29,11 +29,24 @@ def _build_exclusion_instructions(exclusion_list: list[dict] | None) -> str:
     return "\n\n".join(parts)
 
 
+def _build_slang_instructions(slang_dict: dict | None) -> str:
+    """Build a slang glossary section for the system prompt."""
+    if not slang_dict:
+        return ""
+    lines = [f'- "{word}": {defn}' for word, defn in slang_dict.items()]
+    return (
+        "The following is a glossary of slang terms used in this community. "
+        "Use these definitions to understand messages and respond naturally:\n"
+        + "\n".join(lines)
+    )
+
+
 def build_post_messages(
     persona: Persona,
     user_instruction: str,
     system_prompt: str = "",
     exclusion_list: list[dict] | None = None,
+    slang_dict: dict | None = None,
     template: str = "",
 ) -> list[dict[str, str]]:
     """Build messages for an admin-initiated post (the original pipeline)."""
@@ -41,6 +54,9 @@ def build_post_messages(
     # Append user-provided additional constraints/behavior
     if system_prompt:
         system += "\n\n" + system_prompt
+    slang_text = _build_slang_instructions(slang_dict)
+    if slang_text:
+        system += "\n\n" + slang_text
     exclusion_text = _build_exclusion_instructions(exclusion_list)
     if exclusion_text:
         system += "\n\n" + exclusion_text
@@ -63,6 +79,7 @@ def build_interaction_messages(
     user_name: str,
     system_prompt: str = "",
     exclusion_list: list[dict] | None = None,
+    slang_dict: dict | None = None,
     template: str = "",
 ) -> list[dict[str, str]]:
     """Build messages for a user-initiated @Cy interaction reply."""
@@ -75,6 +92,9 @@ def build_interaction_messages(
     # Append user-provided additional constraints/behavior
     if system_prompt:
         system += "\n\n" + system_prompt
+    slang_text = _build_slang_instructions(slang_dict)
+    if slang_text:
+        system += "\n\n" + slang_text
     exclusion_text = _build_exclusion_instructions(exclusion_list)
     if exclusion_text:
         system += "\n\n" + exclusion_text

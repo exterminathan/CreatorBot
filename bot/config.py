@@ -40,7 +40,7 @@ class Config:
         }
         self.interaction_settings: dict = {
             "enabled": False,
-            "channel_id": None,
+            "channel_ids": [],
             "max_tokens": 150,
             "temperature": 0.9,
             "rate_limit_seconds": 300,
@@ -54,6 +54,8 @@ class Config:
             "can_view_logs": False,
         }
         self.exclusion_list: list[dict] = []
+        self.slang_dict: dict[str, str] = {}
+        self.channel_permissions: dict = {}
         self.default_responses: list[str] = [
             "hmm",
             "lol",
@@ -105,6 +107,10 @@ class Config:
             # Migrate old key name
             if "custom_instruction" in iss and "system_prompt" not in iss:
                 iss["system_prompt"] = iss.pop("custom_instruction")
+            # Migrate single channel_id -> channel_ids list
+            if "channel_id" in iss and "channel_ids" not in iss:
+                old_id = iss.pop("channel_id")
+                iss["channel_ids"] = [old_id] if old_id else []
             self.interaction_settings.update(iss)
         self.role_permissions = data.get("role_permissions", {})
         if "default_permissions" in data:
@@ -115,8 +121,10 @@ class Config:
             e if isinstance(e, dict) else {"topic": e, "severity": 3}
             for e in raw_exclusions
         ]
+        self.slang_dict = data.get("slang_dict", {})
         if "default_responses" in data:
             self.default_responses = data["default_responses"]
+        self.channel_permissions = data.get("channel_permissions", {})
         self.system_prompt_template = data.get("system_prompt_template", "")
         self.bot_enabled: bool = data.get("bot_enabled", True)
 
@@ -131,6 +139,8 @@ class Config:
             "role_permissions": self.role_permissions,
             "default_permissions": self.default_permissions,
             "exclusion_list": self.exclusion_list,
+            "slang_dict": self.slang_dict,
+            "channel_permissions": self.channel_permissions,
             "default_responses": self.default_responses,
             "system_prompt_template": self.system_prompt_template,
             "bot_enabled": self.bot_enabled,

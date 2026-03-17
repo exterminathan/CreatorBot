@@ -80,7 +80,12 @@ class AdminCog(discord.ext.commands.Cog):
                 ephemeral=True,
             )
             return
-
+        if not self.bot.cfg.channel_permissions.get(str(channel.id), {}).get("can_post", True):
+            await interaction.response.send_message(
+                f"Posting is disabled for {channel.mention}. Enable it in the Channels panel.",
+                ephemeral=True,
+            )
+            return
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         if not self.bot.cfg.bot_enabled:
