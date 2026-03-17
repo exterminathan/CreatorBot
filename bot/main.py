@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import re
 import threading
 import time
@@ -124,6 +125,7 @@ class CyBot(commands.Bot):
             log.info("Synced %d commands to guild %s", len(synced), guild.id)
         # Populate channel/role info for web API
         self._populate_guild_info()
+        await self._populate_user_names()
 
     def _populate_guild_info(self):
         """Store channel/role info from all guilds for the web API."""
@@ -139,6 +141,17 @@ class CyBot(commands.Bot):
                     seen_roles.add(role.id)
         self.cfg._available_channels = channels
         self.cfg._available_roles = roles
+
+    async def _populate_user_names(self):
+        """Fetch display names for all admin user IDs via the Discord API."""
+        user_names: dict[str, str] = {}
+        for uid in self.cfg.admin_user_ids:
+            try:
+                user = await self.fetch_user(uid)
+                user_names[str(uid)] = user.display_name or user.name
+            except Exception:
+                pass
+        self.cfg._user_names = user_names
 
     async def on_guild_channel_create(self, channel):
         if isinstance(channel, discord.TextChannel):
@@ -168,6 +181,36 @@ class CyBot(commands.Bot):
                 r["name"] = after.name
                 r["color"] = str(after.color)
                 break
+
+    async def on_guild_join(self, guild: discord.Guild):
+        """Sync slash commands and register channels/roles when added to a new server."""
+        log.info("Joined new guild: %s (ID: %s)", guild.name, guild.id)
+        # Sync slash commands to the new guild
+        try:
+            self.tree.copy_global_to(guild=guild)
+            synced = await self.tree.sync(guild=guild)
+            log.info("Synced %d commands to new guild %s", len(synced), guild.id)
+        except Exception:
+            log.exception("Failed to sync commands to guild %s", guild.id)
+        # Register channels and roles
+        for ch in guild.text_channels:
+            self.cfg._available_channels.append(
+                {"id": str(ch.id), "name": ch.name, "guild": guild.name}
+            )
+        seen = {int(r["id"]) for r in self.cfg._available_roles}
+        for role in guild.roles:
+            if role.id not in seen and not role.managed:
+                self.cfg._available_roles.append(
+                    {"id": str(role.id), "name": role.name, "color": str(role.color)}
+                )
+                seen.add(role.id)
+
+    async def on_guild_remove(self, guild: discord.Guild):
+        """Clean up channels/roles when removed from a guild."""
+        log.info("Removed from guild: %s (ID: %s)", guild.name, guild.id)
+        self.cfg._available_channels = [
+            c for c in self.cfg._available_channels if c.get("guild") != guild.name
+        ]
 
     def _get_user_permission(self, member: discord.Member, perm: str) -> bool:
         """Check a permission for a member based on their roles.
@@ -200,6 +243,7 @@ class CyBot(commands.Bot):
         messages = build_post_messages(
             self.persona, clean_prompt, ps.get("system_prompt", ""),
             exclusion_list=self.cfg.exclusion_list,
+            template=self.cfg.system_prompt_template,
         )
         text = await self.gemini.generate(
             messages,
@@ -217,6 +261,7 @@ class CyBot(commands.Bot):
             self.persona, clean_msg, user_name,
             isettings.get("system_prompt", ""),
             exclusion_list=self.cfg.exclusion_list,
+            template=self.cfg.system_prompt_template,
         )
         text = await self.gemini.generate(
             messages,
@@ -229,10 +274,32 @@ class CyBot(commands.Bot):
     async def generate(self, prompt: str) -> str:
         return await self.generate_post(prompt)
 
+    def _fallback_response(self) -> str:
+        """Return a random default response for when generation fails."""
+        responses = self.cfg.default_responses
+        if responses:
+            return random.choice(responses)
+        return "hmm"
+
+    async def log_to_channel(self, embed: discord.Embed) -> None:
+        """Send a log embed to the configured log channel, if set."""
+        if not self.cfg.log_channel_id:
+            return
+        channel = self.get_channel(self.cfg.log_channel_id)
+        if not isinstance(channel, discord.abc.Messageable):
+            return
+        try:
+            await channel.send(embed=embed)
+        except Exception:
+            log.warning("Failed to send log to channel %s", self.cfg.log_channel_id)
+
     async def on_message(self, message: discord.Message):
         """Handle @Cy mentions in the interaction channel."""
         # Ignore own messages and bot messages
         if message.author.bot:
+            return
+        # Kill switch: block all public output when disabled
+        if not self.cfg.bot_enabled:
             return
         # Check if interactions are enabled
         isettings = self.cfg.interaction_settings
@@ -297,22 +364,37 @@ class CyBot(commands.Bot):
                 )
             except TimeoutError:
                 log.warning("interaction timeout: user=%s", message.author)
-                await message.reply("hmm gimme a sec... actually nvm brain lagged out", mention_author=False)
-                return
+                text = self._fallback_response()
             except Exception:
                 log.exception("interaction error: user=%s", message.author)
-                return
+                text = self._fallback_response()
         finally:
             try:
                 await message.remove_reaction('\U0001f4ad', self.user)
             except discord.HTTPException:
                 pass
 
+        # Use fallback if generation returned empty / was blocked
+        if not text or not text.strip():
+            text = self._fallback_response()
+
+        # Prepend user mention so the reply feels personal
+        mention = f"<@{message.author.id}>"
+        text = f"{mention} {text}"
+
         # Post via webhook so it appears as Cy
         if message.channel.id in self.cfg.active_channels:
             await self.webhooks.send_as_cy(message.channel, text)
         else:
             await message.reply(text, mention_author=False)
+
+        em = discord.Embed(title="\U0001f4ac Interaction Reply", color=discord.Color.blurple())
+        em.timestamp = discord.utils.utcnow()
+        em.add_field(name="User", value=str(message.author), inline=True)
+        em.add_field(name="Channel", value=message.channel.mention, inline=True)
+        em.add_field(name="Message", value=clean_content[:300], inline=False)
+        em.add_field(name="Reply", value=text[:500], inline=False)
+        await self.log_to_channel(em)
 
     async def close(self):
         await self.gemini.close()

@@ -25,11 +25,10 @@ class AdminCog(discord.ext.commands.Cog):
     # -- guards --------------------------------------------------------------
 
     def _is_admin(self, interaction: discord.Interaction) -> bool:
-        if interaction.channel_id != self.bot.cfg.admin_channel_id:
-            return False
+        # Any admin user can use commands from any channel in any server
         if interaction.user.id in self.bot.cfg.admin_user_ids:
             return True
-        # Check role-based permission
+        # Role-based: can_use_commands allows /cy from any channel
         if isinstance(interaction.user, discord.Member):
             return self.bot._get_user_permission(interaction.user, "can_use_commands")
         return False
@@ -84,6 +83,13 @@ class AdminCog(discord.ext.commands.Cog):
 
         await interaction.response.defer(ephemeral=True, thinking=True)
 
+        if not self.bot.cfg.bot_enabled:
+            await interaction.followup.send(
+                "Bot is currently disabled. Use `/cy enable` to re-enable.",
+                ephemeral=True,
+            )
+            return
+
         log.info(
             "generate/newpost start: channel_id=%s prompt=%r",
             channel.id, prompt[:120],
@@ -94,6 +100,12 @@ class AdminCog(discord.ext.commands.Cog):
             )
         except TimeoutError:
             log.warning("generate/newpost timeout: channel_id=%s", channel.id)
+            em = discord.Embed(title="\u23f1\ufe0f Post Timed Out", color=discord.Color.orange())
+            em.timestamp = discord.utils.utcnow()
+            em.add_field(name="Channel", value=channel.mention, inline=True)
+            em.add_field(name="By", value=str(interaction.user), inline=True)
+            em.add_field(name="Prompt", value=prompt[:300], inline=False)
+            await self.bot.log_to_channel(em)
             await interaction.followup.send(
                 "Generation timed out. The model may be overloaded; try a shorter prompt or retry in a moment.",
                 ephemeral=True,
@@ -101,6 +113,12 @@ class AdminCog(discord.ext.commands.Cog):
             return
         except Exception as exc:
             log.exception("generate/newpost error: channel_id=%s", channel.id)
+            em = discord.Embed(title="\u274c Post Failed", color=discord.Color.red())
+            em.timestamp = discord.utils.utcnow()
+            em.add_field(name="Channel", value=channel.mention, inline=True)
+            em.add_field(name="By", value=str(interaction.user), inline=True)
+            em.add_field(name="Error", value=str(exc)[:300], inline=False)
+            await self.bot.log_to_channel(em)
             await interaction.followup.send(f"Generation failed: {exc}", ephemeral=True)
             return
 
@@ -109,6 +127,13 @@ class AdminCog(discord.ext.commands.Cog):
             "generate/newpost done: channel_id=%s message_id=%s chars=%d",
             channel.id, msg.id, len(text),
         )
+        em = discord.Embed(title="\U0001f4ee Post Created", color=discord.Color.green())
+        em.timestamp = discord.utils.utcnow()
+        em.add_field(name="Channel", value=channel.mention, inline=True)
+        em.add_field(name="By", value=str(interaction.user), inline=True)
+        em.add_field(name="Prompt", value=prompt[:300], inline=False)
+        em.add_field(name="Message", value=msg.jump_url, inline=False)
+        await self.bot.log_to_channel(em)
         await interaction.followup.send(
             f"Posted in {channel.mention}: {msg.jump_url}", ephemeral=True
         )
@@ -163,10 +188,58 @@ class AdminCog(discord.ext.commands.Cog):
                 ephemeral=True,
             )
             return
+        if not self.bot.cfg.bot_enabled:
+            await interaction.response.send_message(
+                "Bot is currently disabled. Use `/cy enable` to re-enable.",
+                ephemeral=True,
+            )
+            return
         msg = await self.bot.webhooks.send_as_cy(channel, message)
         log.info("say_raw: channel_id=%s message_id=%s", channel.id, msg.id)
+        em = discord.Embed(title="\U0001f4ac Raw Message Sent", color=discord.Color.blue())
+        em.timestamp = discord.utils.utcnow()
+        em.add_field(name="Channel", value=channel.mention, inline=True)
+        em.add_field(name="By", value=str(interaction.user), inline=True)
+        em.add_field(name="Message", value=message[:500], inline=False)
+        em.add_field(name="Jump", value=msg.jump_url, inline=False)
+        await self.bot.log_to_channel(em)
         await interaction.response.send_message(
             f"Sent to {channel.mention}: {msg.jump_url}", ephemeral=True
+        )
+
+
+    # -- /cy disable --------------------------------------------------------
+
+    @cy.command(name="disable", description="Kill switch: immediately stop all bot responses")
+    async def disable(self, interaction: discord.Interaction):
+        if await self._deny(interaction):
+            return
+        self.bot.cfg.set_bot_enabled(False)
+        log.warning("Kill switch activated by %s", interaction.user)
+        em = discord.Embed(title="\U0001f6d1 Bot Disabled", color=discord.Color.red())
+        em.timestamp = discord.utils.utcnow()
+        em.add_field(name="By", value=str(interaction.user), inline=False)
+        await self.bot.log_to_channel(em)
+        await interaction.response.send_message(
+            "\U0001f6d1 **Bot disabled.** All public responses are now blocked. Use `/cy enable` to resume.",
+            ephemeral=True,
+        )
+
+    # -- /cy enable ----------------------------------------------------------
+
+    @cy.command(name="enable", description="Re-enable bot responses after a kill switch")
+    async def enable(self, interaction: discord.Interaction):
+        if await self._deny(interaction):
+            return
+        self.bot.cfg.set_bot_enabled(True)
+        log.info("Bot re-enabled by %s", interaction.user)
+        em = discord.Embed(title="\u2705 Bot Enabled", color=discord.Color.green())
+        em.timestamp = discord.utils.utcnow()
+        em.add_field(name="By", value=str(interaction.user), inline=False)
+        await self.bot.log_to_channel(em)
+        await interaction.response.send_message(
+            "\u2705 **Bot enabled.** Responses are live again.",
+            ephemeral=True,
         )
 
 

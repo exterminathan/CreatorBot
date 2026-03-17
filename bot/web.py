@@ -5,7 +5,9 @@ import functools
 import hmac
 import logging
 import mimetypes
+import os
 import secrets
+import threading
 from pathlib import Path
 
 from aiohttp import web
@@ -86,7 +88,9 @@ async def get_config(request: web.Request) -> web.Response:
     return web.json_response({
         "active_channels": [str(c) for c in cfg.active_channels],
         "admin_user_ids": [str(u) for u in cfg.admin_user_ids],
+        "user_names": cfg._user_names,
         "default_channel_id": str(cfg.default_channel_id) if cfg.default_channel_id else None,
+        "log_channel_id": str(cfg.log_channel_id) if cfg.log_channel_id else None,
         "owner_id": str(cfg.admin_user_id),
         "post_settings": cfg.post_settings,
         "interaction_settings": {
@@ -96,6 +100,9 @@ async def get_config(request: web.Request) -> web.Response:
         "role_permissions": cfg.role_permissions,
         "default_permissions": cfg.default_permissions,
         "exclusion_list": cfg.exclusion_list,
+        "default_responses": cfg.default_responses,
+        "system_prompt_template": cfg.system_prompt_template,
+        "bot_enabled": cfg.bot_enabled,
     })
 
 
@@ -116,6 +123,9 @@ async def put_config(request: web.Request) -> web.Response:
     if "default_channel_id" in body:
         val = body["default_channel_id"]
         cfg.default_channel_id = int(val) if val else None
+    if "log_channel_id" in body:
+        val = body["log_channel_id"]
+        cfg.log_channel_id = int(val) if val else None
     if "post_settings" in body:
         ps = body["post_settings"]
         if "max_tokens" in ps:
@@ -146,7 +156,17 @@ async def put_config(request: web.Request) -> web.Response:
     if "default_permissions" in body:
         cfg.default_permissions.update(body["default_permissions"])
     if "exclusion_list" in body:
-        cfg.exclusion_list = list(body["exclusion_list"])
+        cfg.exclusion_list = [
+            {"topic": e["topic"], "severity": int(e.get("severity", 3))}
+            if isinstance(e, dict) else {"topic": str(e), "severity": 3}
+            for e in body["exclusion_list"]
+        ]
+    if "default_responses" in body:
+        cfg.default_responses = list(body["default_responses"])
+    if "system_prompt_template" in body:
+        cfg.system_prompt_template = str(body["system_prompt_template"])
+    if "bot_enabled" in body:
+        cfg.bot_enabled = bool(body["bot_enabled"])
     cfg.save()
     return web.json_response({"status": "ok"})
 
@@ -173,15 +193,16 @@ async def put_persona(request: web.Request) -> web.Response:
 
 @_require_auth
 async def get_preview_prompts(request: web.Request) -> web.Response:
+    from ai.persona import DEFAULT_TEMPLATE
     persona = request.app["persona"]
-    post_default = persona.system_prompt
-    interaction_default = (
-        persona.system_prompt
-        + "\n\nYou are replying to a Discord user who tagged you. "
-        "Keep your reply natural and conversational \u2014 match their energy. "
-        "Do NOT repeat their message back. Just respond like you would in a real chat."
-    )
-    return web.json_response({"post": post_default, "interaction": interaction_default})
+    cfg = request.app["config"]
+    template = cfg.system_prompt_template or DEFAULT_TEMPLATE
+    rendered = persona.render_system_prompt(template)
+    return web.json_response({
+        "rendered": rendered,
+        "template": template,
+        "default_template": DEFAULT_TEMPLATE,
+    })
 
 
 @_require_auth
@@ -194,6 +215,30 @@ async def get_channels(request: web.Request) -> web.Response:
 async def get_roles(request: web.Request) -> web.Response:
     cfg = request.app["config"]
     return web.json_response(cfg._available_roles)
+
+
+@_require_auth
+async def bot_control(request: web.Request) -> web.Response:
+    cfg = request.app["config"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid request"}, status=400)
+    action = str(body.get("action", ""))
+    if action == "enable":
+        cfg.set_bot_enabled(True)
+        log.info("Bot enabled via web UI")
+        return web.json_response({"status": "ok", "bot_enabled": True})
+    elif action == "disable":
+        cfg.set_bot_enabled(False)
+        log.warning("Bot disabled via web UI")
+        return web.json_response({"status": "ok", "bot_enabled": False})
+    elif action == "restart":
+        log.warning("Bot restart requested via web UI")
+        threading.Timer(1.5, os._exit, args=[0]).start()
+        return web.json_response({"status": "ok", "message": "Restarting"})
+    else:
+        return web.json_response({"error": "Unknown action"}, status=400)
 
 
 # ── App factory ─────────────────────────────────────────────────────────────
@@ -218,6 +263,7 @@ def create_app(config, persona) -> web.Application:
     app.router.add_put("/api/persona", put_persona)
     app.router.add_get("/api/channels", get_channels)
     app.router.add_get("/api/roles", get_roles)
+    app.router.add_post("/api/bot-control", bot_control)
     app.router.add_get("/api/preview_prompts", get_preview_prompts)
 
     if not config.web_password:
@@ -393,6 +439,16 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
 .perm-btn.allow.active{background:#248046;border-color:#248046;color:#fff}
 .perm-btn.deny.active{background:#da373c;border-color:#da373c;color:#fff}
 .perm-btn.inherit.active{background:var(--bg-light);border-color:var(--text-muted);color:var(--text-secondary)}
+
+/* ── Exclusion severity rows ── */
+.excl-row{display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--bg-dark);border-radius:4px;margin-bottom:8px;border:1px solid var(--border)}
+.excl-topic{flex:1;font-size:14px;font-weight:500}
+.sev-toggle{display:flex;gap:4px}
+.sev-btn{width:32px;height:28px;border-radius:4px;border:1px solid var(--border);background:var(--bg-light);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;transition:all .15s;color:var(--text-muted)}
+.sev-btn:hover{opacity:.85}
+.sev-btn.s1.active{background:#248046;border-color:#248046;color:#fff}
+.sev-btn.s2.active{background:#f0b232;border-color:#f0b232;color:#1e1f22}
+.sev-btn.s3.active{background:#da373c;border-color:#da373c;color:#fff}
 </style>
 </head>
 <body>
@@ -403,23 +459,48 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
     <!-- Sidebar -->
     <nav class="sidebar">
       <div class="sidebar-title">CyBot Settings</div>
-      <div class="sidebar-item active" data-section="admins" onclick="showSection('admins')">Admin Users</div>
+      <div class="sidebar-item active" data-section="general" onclick="showSection('general')">General</div>
+      <div class="sidebar-item" data-section="admins" onclick="showSection('admins')">Admin Users</div>
       <div class="sidebar-item" data-section="channels" onclick="showSection('channels')">Channels</div>
       <hr class="sidebar-sep">
       <div class="sidebar-item" data-section="persona" onclick="showSection('persona')">Persona</div>
+      <div class="sidebar-item" data-section="video-lines" onclick="showSection('video-lines')">Video Lines</div>
       <div class="sidebar-item" data-section="messages" onclick="showSection('messages')">Example Messages</div>
-      <div class="sidebar-item" data-section="system-prompts" onclick="showSection('system-prompts')">System Prompt Overrides</div>
+      <div class="sidebar-item" data-section="exclusions" onclick="showSection('exclusions')">Exclusions</div>
+      <div class="sidebar-item" data-section="default-responses" onclick="showSection('default-responses')">Default Responses</div>
+      <div class="sidebar-item" data-section="system-prompts" onclick="showSection('system-prompts')">System Prompts</div>
       <hr class="sidebar-sep">
       <div class="sidebar-item" data-section="post-settings" onclick="showSection('post-settings')">Post Settings</div>
-      <div class="sidebar-item" data-section="interaction-settings" onclick="showSection('interaction-settings')">Interaction Settings</div>      <hr class=\"sidebar-sep\">
-      <div class=\"sidebar-item\" data-section=\"permissions\" onclick=\"showSection('permissions')\">Permissions</div>
-      <div class=\"sidebar-item\" data-section=\"exclusions\" onclick=\"showSection('exclusions')\">Exclusions</div>    </nav>
+      <div class="sidebar-item" data-section="interaction-settings" onclick="showSection('interaction-settings')">Interaction Settings</div>
+      <div class="sidebar-item" data-section="logging" onclick="showSection('logging')">Logging</div>      <hr class=\"sidebar-sep\">
+      <div class="sidebar-item" data-section="permissions" onclick="showSection('permissions')">Permissions</div>    </nav>
 
     <!-- Content -->
     <div class="main"><div class="main-inner">
 
+      <!-- ── General ── -->
+      <div id="section-general" class="section active">
+        <h2 class="section-title">General Settings</h2>
+        <p class="section-desc">Control the bot's running state and connection.</p>
+        <div class="form-group">
+          <label class="form-label">Bot Status</label>
+          <p class="form-hint">Start or stop all bot responses. When stopped, the bot ignores all messages and @mentions.</p>
+          <div style="display:flex;gap:12px;margin-top:8px">
+            <button class="btn btn-primary" id="btn-bot-start" onclick="botControl('enable')">&#9654; Start</button>
+            <button class="btn btn-danger" id="btn-bot-stop" onclick="botControl('disable')">&#9632; Stop</button>
+          </div>
+          <div id="bot-status-indicator" style="margin-top:12px;font-size:14px;font-weight:600"></div>
+        </div>
+        <hr class="divider">
+        <div class="form-group">
+          <label class="form-label">Restart Bot</label>
+          <p class="form-hint">Disconnects and reconnects the bot to Discord. Use if the bot appears stuck or unresponsive. It will be back online within ~15 seconds.</p>
+          <button class="btn btn-danger" onclick="botControl('restart')" style="margin-top:8px">&#8635; Restart</button>
+        </div>
+      </div>
+
       <!-- ── Admins ── -->
-      <div id="section-admins" class="section active">
+      <div id="section-admins" class="section">
         <h2 class="section-title">Admin Users</h2>
         <p class="section-desc">Discord users who can control the bot via slash commands. The owner (from env var) cannot be removed.</p>
         <div id="admin-list"></div>
@@ -458,25 +539,35 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
         </div>
         <hr class="divider">
         <div class="form-group">
+          <label class="form-label">Facts</label>
+          <p class="form-hint">Specific facts and knowledge about Cy that influence responses (e.g. "From LA", "Drives a Camaro")</p>
+          <div class="tag-container" id="fact-tags"></div>
+          <div class="add-row">
+            <input type="text" id="add-fact-input" placeholder="Add a fact about Cy">
+            <button class="btn btn-primary btn-sm" onclick="addFact()">Add</button>
+          </div>
+        </div>
+        <div class="form-group">
           <label class="form-label">Vocabulary</label>
-          <p class="form-hint">Words and phrases Cy commonly uses</p>
+          <p class="form-hint">Words and phrases that subtly color Cy's speech (used as flavor, not primary content)</p>
           <div class="tag-container" id="vocab-tags"></div>
           <div class="add-row">
             <input type="text" id="add-vocab-input" placeholder="Add word or phrase">
             <button class="btn btn-primary btn-sm" onclick="addVocab()">Add</button>
           </div>
         </div>
-        <div class="form-group">
-          <label class="form-label">Topics</label>
-          <p class="form-hint">Topics Cy frequently talks about</p>
-          <div class="tag-container" id="topic-tags"></div>
-          <div class="add-row">
-            <input type="text" id="add-topic-input" placeholder="Add topic">
-            <button class="btn btn-primary btn-sm" onclick="addTopic()">Add</button>
-          </div>
-        </div>
         <hr class="divider">
         <button class="btn btn-primary" onclick="savePersona()">Save Persona</button>
+      </div>
+
+      <!-- ── Video Lines ── -->
+      <div id="section-video-lines" class="section">
+        <h2 class="section-title">Video Lines</h2>
+        <p class="section-desc">Direct lines from Cy's videos. These teach the AI his authentic voice and speech patterns. Add as many as you like.</p>
+        <div id="video-line-list"></div>
+        <button class="btn btn-primary btn-sm" onclick="addVideoLine()" style="margin-top:12px">+ Add Line</button>
+        <hr class="divider">
+        <button class="btn btn-primary" onclick="saveVideoLines()">Save Video Lines</button>
       </div>
 
       <!-- ── Example Messages ── -->
@@ -489,21 +580,67 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
         <button class="btn btn-primary" onclick="saveMessages()">Save Messages</button>
       </div>
 
-      <!-- ── System Prompt Override ── -->
-      <div id="section-system-prompts" class="section">
-        <h2 class="section-title">System Prompt Override</h2>
-        <p class="section-desc">Additional instructions applied to both post and interaction pipelines. The persona and example messages are always included.</p>
-        <div id="system-prompt-view">
-          <textarea class="form-textarea" id="system-prompt-view-field" rows="8" disabled style="opacity:0.7;user-select:none"></textarea>
-          <button class="btn btn-warning" style="margin-top:8px" onclick="enableSystemPromptEdit()">Unlock to Edit</button>
+      <!-- ── Exclusions ── -->
+      <div id="section-exclusions" class="section">
+        <h2 class="section-title">Exclusions</h2>
+        <p class="section-desc">Topics that Cy should avoid or block. Severity controls how strictly the topic is filtered. Changes save automatically.</p>
+        <p class="form-hint" style="margin-bottom:16px"><b>1</b> = Allowed (no filter) &nbsp; <b>2</b> = Restricted (no direct discussion, tangential OK) &nbsp; <b>3</b> = Blocked (never mention)</p>
+        <div id="exclusion-list"></div>
+        <div class="add-row">
+          <input type="text" id="add-exclusion-input" placeholder="Add word or topic to exclude">
+          <select id="add-exclusion-severity" class="form-input" style="width:auto;min-width:60px">
+            <option value="3">3</option>
+            <option value="2">2</option>
+            <option value="1">1</option>
+          </select>
+          <button class="btn btn-primary btn-sm" onclick="addExclusion()">Add</button>
         </div>
-        <div id="system-prompt-edit" style="display:none">
-          <textarea class="form-textarea" id="system-prompt-edit-field" rows="8"></textarea>
-          <div style="display:flex;gap:8px;margin-top:8px">
-            <button class="btn btn-primary" onclick="saveSystemPrompts()">Save</button>
-            <button class="btn btn-secondary" onclick="cancelSystemPromptEdit()">Cancel</button>
+      </div>
+
+      <!-- ── Default Responses ── -->
+      <div id="section-default-responses" class="section">
+        <h2 class="section-title">Default Responses</h2>
+        <p class="section-desc">When AI generation fails, times out, or gets blocked, Cy will pick one of these at random. Changes save automatically.</p>
+        <div id="default-response-list"></div>
+        <div class="add-row">
+          <input type="text" id="add-default-response-input" placeholder="Add a fallback response">
+          <button class="btn btn-primary btn-sm" onclick="addDefaultResponse()">Add</button>
+        </div>
+      </div>
+
+      <!-- ── System Prompts ── -->
+      <div id="section-system-prompts" class="section">
+        <h2 class="section-title">System Prompts</h2>
+        <p class="section-desc">The base system prompt is generated from persona settings. You can edit the template structure. Additive prompts are appended per-pipeline.</p>
+        <div class="form-group">
+          <label class="form-label">Base System Prompt (Generated)</label>
+          <p class="form-hint">Read-only \u2014 this is computed from persona data + template. Edit the template to change structure.</p>
+          <div id="base-prompt-view">
+            <textarea class="form-textarea" id="base-prompt-rendered" rows="14" disabled style="opacity:0.7"></textarea>
+            <button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="editTemplate()">Edit Template</button>
+          </div>
+          <div id="base-prompt-edit" style="display:none">
+            <p class="form-hint">Placeholders: {name}, {bio}, {facts}, {writing_style}, {vocabulary}, {example_messages}, {video_lines}</p>
+            <textarea class="form-textarea" id="base-prompt-template" rows="14"></textarea>
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <button class="btn btn-primary" onclick="saveTemplate()">Save Template</button>
+              <button class="btn btn-sm" style="background:var(--bg-light)" onclick="cancelTemplateEdit()">Cancel</button>
+              <button class="btn btn-sm" style="background:var(--bg-light)" onclick="resetTemplate()">Reset to Default</button>
+            </div>
           </div>
         </div>
+        <hr class="divider">
+        <div class="form-group">
+          <label class="form-label">Post Additive Prompt</label>
+          <p class="form-hint">Extra instructions appended when generating posts via /cy newpost</p>
+          <textarea class="form-textarea" id="post-additive-prompt" rows="4"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Interaction Additive Prompt</label>
+          <p class="form-hint">Extra instructions appended when replying to @Cy mentions</p>
+          <textarea class="form-textarea" id="interaction-additive-prompt" rows="4"></textarea>
+        </div>
+        <button class="btn btn-primary" onclick="saveAdditivePrompts()">Save Additive Prompts</button>
       </div>
 
       <!-- ── Post Settings ── -->
@@ -560,6 +697,20 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
         <hr class="divider">
         <button class="btn btn-primary" onclick="saveInteractionSettings()">Save Interaction Settings</button>
       </div>
+      <!-- ── Logging ── -->
+      <div id="section-logging" class="section">
+        <h2 class="section-title">Logging</h2>
+        <p class="section-desc">Send bot activity logs to a dedicated Discord channel. Posts, raw messages, interactions, enable/disable events, and errors will all appear there.</p>
+        <div class="form-group">
+          <label class="form-label">Log Channel</label>
+          <p class="form-hint">Select the channel where the bot will send activity logs. Leave blank to disable.</p>
+          <select class="form-input" id="log-channel-id">
+            <option value="">\u2014 Disabled \u2014</option>
+          </select>
+        </div>
+        <hr class="divider">
+        <button class="btn btn-primary" onclick="saveLogging()">Save Logging</button>
+      </div>
       <!-- \\u2500\\u2500 Permissions \\u2500\\u2500 -->
       <div id=\"section-permissions\" class=\"section\">
         <h2 class=\"section-title\">Permissions</h2>
@@ -584,19 +735,6 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
             </div>
           </div>
         </div>
-      </div>
-
-      <!-- \\u2500\\u2500 Exclusions \\u2500\\u2500 -->
-      <div id=\"section-exclusions\" class=\"section\">
-        <h2 class=\"section-title\">Exclusions</h2>
-        <p class=\"section-desc\">Words and topics that Cy will never mention or discuss. These are injected into the system prompt.</p>
-        <div class=\"tag-container\" id=\"exclusion-tags\"></div>
-        <div class=\"add-row\">
-          <input type=\"text\" id=\"add-exclusion-input\" placeholder=\"Add word or topic to exclude\">
-          <button class=\"btn btn-primary btn-sm\" onclick=\"addExclusion()\">Add</button>
-        </div>
-        <hr class=\"divider\">
-        <button class=\"btn btn-primary\" onclick=\"saveExclusions()\">Save Exclusions</button>
       </div>
     </div></div>
   </div>
@@ -638,14 +776,15 @@ async function loadData() {
     window._channels = await api('GET', '/api/channels') || [];
     window._roles = await api('GET', '/api/roles') || [];
     if (!config || !persona) { location.href = '/admin'; return; }
-    renderAll();
+    await renderAll();
   } catch { location.href = '/admin'; }
 }
 
-function renderAll() {
-  renderAdmins(); renderChannels(); renderPersona(); renderMessages(); renderSystemPrompts();
-  renderPostSettings(); renderInteractionSettings();
-  populateChannelDropdown(); renderDefaultPerms(); populateRoleSelect(); renderExclusions();
+async function renderAll() {
+  renderGeneral(); renderAdmins(); renderChannels(); renderPersona(); renderMessages(); renderVideoLines();
+  await renderSystemPrompts();
+  renderPostSettings(); renderInteractionSettings(); renderLogging();
+  populateChannelDropdown(); renderDefaultPerms(); populateRoleSelect(); renderExclusions(); renderDefaultResponses();
 }
 
 /* ── Navigation ── */
@@ -663,15 +802,23 @@ function showSection(name) {
 function renderAdmins() {
   const el = document.getElementById('admin-list');
   el.innerHTML = '';
+  const names = config.user_names || {};
   for (const uid of config.admin_user_ids) {
     const isOwner = (uid === config.owner_id);
     const item = document.createElement('div');
     item.className = 'list-item';
     const left = document.createElement('div');
-    const idSpan = document.createElement('span');
-    idSpan.className = 'id-text';
-    idSpan.textContent = uid;
-    left.appendChild(idSpan);
+    const nameSpan = document.createElement('span');
+    nameSpan.style.fontWeight = '500';
+    nameSpan.textContent = names[uid] || uid;
+    left.appendChild(nameSpan);
+    if (names[uid]) {
+      const idSub = document.createElement('span');
+      idSub.className = 'id-text';
+      idSub.style.cssText = 'font-size:11px;color:var(--text-muted);margin-left:8px';
+      idSub.textContent = uid;
+      left.appendChild(idSub);
+    }
     if (isOwner) {
       const badge = document.createElement('span');
       badge.className = 'badge badge-owner';
@@ -793,7 +940,7 @@ function renderPersona() {
   document.getElementById('persona-bio').value = persona.bio || '';
   document.getElementById('persona-style').value = persona.writing_style || '';
   renderTags('vocab-tags', persona.vocabulary || [], persona, 'vocabulary');
-  renderTags('topic-tags', persona.topics || [], persona, 'topics');
+  renderTags('fact-tags', persona.facts || [], persona, 'facts');
 }
 
 function renderTags(containerId, items, obj, field) {
@@ -819,17 +966,17 @@ function addVocab() {
   if (!val) return;
   if (!persona.vocabulary) persona.vocabulary = [];
   persona.vocabulary.push(val);
-  renderTags('vocab-tags', persona.vocabulary, 'vocabulary');
+  renderTags('vocab-tags', persona.vocabulary, persona, 'vocabulary');
   input.value = '';
 }
 
-function addTopic() {
-  const input = document.getElementById('add-topic-input');
+function addFact() {
+  const input = document.getElementById('add-fact-input');
   const val = input.value.trim();
   if (!val) return;
-  if (!persona.topics) persona.topics = [];
-  persona.topics.push(val);
-  renderTags('topic-tags', persona.topics, 'topics');
+  if (!persona.facts) persona.facts = [];
+  persona.facts.push(val);
+  renderTags('fact-tags', persona.facts, persona, 'facts');
   input.value = '';
 }
 
@@ -838,7 +985,7 @@ async function savePersona() {
   persona.bio = document.getElementById('persona-bio').value;
   persona.writing_style = document.getElementById('persona-style').value;
   const r = await api('PUT', '/api/persona', persona);
-  if (r) toast('Persona saved');
+  if (r) { toast('Persona saved'); await renderSystemPrompts(); }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -880,11 +1027,58 @@ function addMessage() {
 }
 
 async function saveMessages() {
-  const r = await api('PUT', '/api/persona', {example_messages: persona.example_messages});
-  if (r) toast('Example messages saved');
+  const r = await api('PUT', '/api/persona', {
+    example_messages: persona.example_messages
+  });
+  if (r) { toast('Messages saved'); await renderSystemPrompts(); }
 }
 
 function autoResize(ta) { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Video Lines
+   ══════════════════════════════════════════════════════════════════════════ */
+function renderVideoLines() {
+  const el = document.getElementById('video-line-list');
+  el.innerHTML = '';
+  const lines = persona.video_lines || [];
+  for (let i = 0; i < lines.length; i++) {
+    const item = document.createElement('div');
+    item.className = 'message-item';
+    const num = document.createElement('span');
+    num.className = 'msg-num';
+    num.textContent = (i + 1) + '.';
+    item.appendChild(num);
+    const ta = document.createElement('textarea');
+    ta.value = lines[i];
+    ta.rows = 1;
+    ta.oninput = function() { persona.video_lines[i] = this.value; autoResize(this); };
+    item.appendChild(ta);
+    const rm = document.createElement('button');
+    rm.className = 'btn btn-danger btn-sm';
+    rm.textContent = '\\u2715';
+    rm.onclick = () => { persona.video_lines.splice(i, 1); renderVideoLines(); };
+    rm.style.marginTop = '4px';
+    item.appendChild(rm);
+    el.appendChild(item);
+    autoResize(ta);
+  }
+}
+
+function addVideoLine() {
+  if (!persona.video_lines) persona.video_lines = [];
+  persona.video_lines.push('');
+  renderVideoLines();
+  const items = document.querySelectorAll('#video-line-list .message-item textarea');
+  if (items.length) items[items.length - 1].focus();
+}
+
+async function saveVideoLines() {
+  const r = await api('PUT', '/api/persona', {
+    video_lines: persona.video_lines || []
+  });
+  if (r) { toast('Video lines saved'); await renderSystemPrompts(); }
+}
 
 /* ══════════════════════════════════════════════════════════════════════════
    Post Settings
@@ -934,37 +1128,81 @@ async function saveInteractionSettings() {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   System Prompt Override
+   Logging
    ══════════════════════════════════════════════════════════════════════════ */
-function renderSystemPrompts() {
-  const ps = config.post_settings || {};
-  document.getElementById('system-prompt-view-field').value = ps.system_prompt || '';
+function populateLogChannelDropdown() {
+  const sel = document.getElementById('log-channel-id');
+  const current = config.log_channel_id || '';
+  sel.innerHTML = '<option value="">\\u2014 Disabled \\u2014</option>';
+  for (const ch of (window._channels || [])) {
+    const opt = document.createElement('option');
+    opt.value = ch.id;
+    opt.textContent = '#' + ch.name + (ch.guild ? ' (' + ch.guild + ')' : '');
+    if (ch.id === current) opt.selected = true;
+    sel.appendChild(opt);
+  }
 }
 
-function enableSystemPromptEdit() {
-  const ps = config.post_settings || {};
-  document.getElementById('system-prompt-edit-field').value = ps.system_prompt || '';
-  document.getElementById('system-prompt-view').style.display = 'none';
-  document.getElementById('system-prompt-edit').style.display = 'block';
+function renderLogging() {
+  populateLogChannelDropdown();
 }
 
-function cancelSystemPromptEdit() {
-  document.getElementById('system-prompt-edit').style.display = 'none';
-  document.getElementById('system-prompt-view').style.display = 'block';
+async function saveLogging() {
+  const val = document.getElementById('log-channel-id').value.trim() || null;
+  const r = await api('PUT', '/api/config', {log_channel_id: val});
+  if (r) { config.log_channel_id = val; toast('Logging saved'); }
 }
 
-async function saveSystemPrompts() {
-  const sp = document.getElementById('system-prompt-edit-field').value;
+/* ══════════════════════════════════════════════════════════════════════════
+   System Prompt Overrides
+   ══════════════════════════════════════════════════════════════════════════ */
+let _promptData = {};
+
+async function renderSystemPrompts() {
+  const data = await api('GET', '/api/preview_prompts');
+  if (data) _promptData = data;
+  document.getElementById('base-prompt-rendered').value = _promptData.rendered || '';
+  document.getElementById('post-additive-prompt').value = (config.post_settings || {}).system_prompt || '';
+  document.getElementById('interaction-additive-prompt').value = (config.interaction_settings || {}).system_prompt || '';
+}
+
+function editTemplate() {
+  document.getElementById('base-prompt-template').value = _promptData.template || '';
+  document.getElementById('base-prompt-view').style.display = 'none';
+  document.getElementById('base-prompt-edit').style.display = 'block';
+}
+
+function cancelTemplateEdit() {
+  document.getElementById('base-prompt-edit').style.display = 'none';
+  document.getElementById('base-prompt-view').style.display = 'block';
+}
+
+function resetTemplate() {
+  document.getElementById('base-prompt-template').value = _promptData.default_template || '';
+}
+
+async function saveTemplate() {
+  const template = document.getElementById('base-prompt-template').value;
+  const r = await api('PUT', '/api/config', {system_prompt_template: template});
+  if (r) {
+    config.system_prompt_template = template;
+    await renderSystemPrompts();
+    cancelTemplateEdit();
+    toast('Template saved');
+  }
+}
+
+async function saveAdditivePrompts() {
+  const postSp = document.getElementById('post-additive-prompt').value;
+  const intSp = document.getElementById('interaction-additive-prompt').value;
   const r = await api('PUT', '/api/config', {
-    post_settings: {system_prompt: sp},
-    interaction_settings: {system_prompt: sp}
+    post_settings: {system_prompt: postSp},
+    interaction_settings: {system_prompt: intSp}
   });
   if (r) {
-    config.post_settings.system_prompt = sp;
-    config.interaction_settings.system_prompt = sp;
-    renderSystemPrompts();
-    cancelSystemPromptEdit();
-    toast('System prompt saved');
+    config.post_settings.system_prompt = postSp;
+    config.interaction_settings.system_prompt = intSp;
+    toast('Additive prompts saved');
   }
 }
 
@@ -991,6 +1229,7 @@ const PERMS = [
   {key: 'bypass_cooldown', name: 'Bypass Cooldown', desc: 'Skip the rate limit between interactions'},
   {key: 'can_interact', name: 'Can @Cy', desc: 'Allowed to mention and interact with Cy'},
   {key: 'can_use_commands', name: 'Use /cy Commands', desc: 'Access to admin slash commands (in admin channel)'},
+  {key: 'can_view_logs', name: 'Can View Logs', desc: 'Allowed to view the bot activity log channel (configure Discord channel perms accordingly)'},
 ];
 
 function renderDefaultPerms() {
@@ -1101,22 +1340,132 @@ async function resetRolePerms() {
    Exclusions
    ══════════════════════════════════════════════════════════════════════════ */
 function renderExclusions() {
-  renderTags('exclusion-tags', config.exclusion_list || [], config, 'exclusion_list');
+  const el = document.getElementById('exclusion-list');
+  el.innerHTML = '';
+  const items = config.exclusion_list || [];
+  for (let i = 0; i < items.length; i++) {
+    const e = items[i];
+    const row = document.createElement('div');
+    row.className = 'excl-row';
+    const topic = document.createElement('span');
+    topic.className = 'excl-topic';
+    topic.textContent = e.topic;
+    row.appendChild(topic);
+    const toggle = document.createElement('div');
+    toggle.className = 'sev-toggle';
+    for (const sev of [1, 2, 3]) {
+      const btn = document.createElement('button');
+      btn.className = 'sev-btn s' + sev + (e.severity === sev ? ' active' : '');
+      btn.textContent = sev;
+      btn.onclick = () => toggleExclusionSeverity(i, sev);
+      toggle.appendChild(btn);
+    }
+    row.appendChild(toggle);
+    const rm = document.createElement('button');
+    rm.className = 'btn btn-danger btn-sm';
+    rm.textContent = '\\u2715';
+    rm.onclick = () => removeExclusion(i);
+    row.appendChild(rm);
+    el.appendChild(row);
+  }
 }
 
-function addExclusion() {
+async function addExclusion() {
   const input = document.getElementById('add-exclusion-input');
+  const sevSel = document.getElementById('add-exclusion-severity');
   const val = input.value.trim();
   if (!val) return;
   if (!config.exclusion_list) config.exclusion_list = [];
-  config.exclusion_list.push(val);
+  config.exclusion_list.push({topic: val, severity: parseInt(sevSel.value)});
   renderExclusions();
   input.value = '';
+  await saveExclusions();
+}
+
+async function toggleExclusionSeverity(index, sev) {
+  config.exclusion_list[index].severity = sev;
+  renderExclusions();
+  await saveExclusions();
+}
+
+async function removeExclusion(index) {
+  config.exclusion_list.splice(index, 1);
+  renderExclusions();
+  await saveExclusions();
 }
 
 async function saveExclusions() {
-  const r = await api('PUT', '/api/config', {exclusion_list: config.exclusion_list || []});
-  if (r) toast('Exclusions saved');
+  await api('PUT', '/api/config', {exclusion_list: config.exclusion_list || []});
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Default Responses
+   ══════════════════════════════════════════════════════════════════════════ */
+function renderDefaultResponses() {
+  const el = document.getElementById('default-response-list');
+  el.innerHTML = '';
+  const items = config.default_responses || [];
+  for (let i = 0; i < items.length; i++) {
+    const item = document.createElement('div');
+    item.className = 'list-item';
+    const text = document.createElement('span');
+    text.style.fontSize = '14px';
+    text.textContent = items[i];
+    item.appendChild(text);
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+    const rm = document.createElement('button');
+    rm.className = 'btn btn-danger btn-sm';
+    rm.textContent = 'Remove';
+    rm.onclick = () => removeDefaultResponse(i);
+    actions.appendChild(rm);
+    item.appendChild(actions);
+    el.appendChild(item);
+  }
+}
+
+async function addDefaultResponse() {
+  const input = document.getElementById('add-default-response-input');
+  const val = input.value.trim();
+  if (!val) return;
+  if (!config.default_responses) config.default_responses = [];
+  config.default_responses.push(val);
+  renderDefaultResponses();
+  input.value = '';
+  const r = await api('PUT', '/api/config', {default_responses: config.default_responses});
+  if (r) toast('Response added');
+}
+
+async function removeDefaultResponse(i) {
+  config.default_responses.splice(i, 1);
+  renderDefaultResponses();
+  const r = await api('PUT', '/api/config', {default_responses: config.default_responses});
+  if (r) toast('Response removed');
+}
+
+/* ── General ── */
+function renderGeneral() {
+  const enabled = config.bot_enabled !== false;
+  const indicator = document.getElementById('bot-status-indicator');
+  if (indicator) {
+    indicator.textContent = enabled ? '\\u25cf Running' : '\\u25cf Stopped';
+    indicator.style.color = enabled ? 'var(--green)' : 'var(--red)';
+  }
+  const btnStart = document.getElementById('btn-bot-start');
+  const btnStop = document.getElementById('btn-bot-stop');
+  if (btnStart) btnStart.disabled = enabled;
+  if (btnStop) btnStop.disabled = !enabled;
+}
+
+async function botControl(action) {
+  if (action === 'restart') {
+    if (!confirm('Restart the bot? It will reconnect to Discord within ~15 seconds.')) return;
+  }
+  const r = await api('POST', '/api/bot-control', {action});
+  if (!r) return;
+  if (action === 'enable') { config.bot_enabled = true; renderGeneral(); toast('Bot started'); }
+  else if (action === 'disable') { config.bot_enabled = false; renderGeneral(); toast('Bot stopped'); }
+  else if (action === 'restart') { toast('Restarting... bot will reconnect shortly'); }
 }
 
 /* ── Toast ── */
@@ -1136,8 +1485,9 @@ document.addEventListener('keydown', e => {
   if (id === 'add-admin-input') addAdmin();
   else if (id === 'add-channel-input') addChannel();
   else if (id === 'add-vocab-input') addVocab();
-  else if (id === 'add-topic-input') addTopic();
+  else if (id === 'add-fact-input') addFact();
   else if (id === 'add-exclusion-input') addExclusion();
+  else if (id === 'add-default-response-input') addDefaultResponse();
 });
 </script>
 </body>

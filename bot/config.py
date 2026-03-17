@@ -31,6 +31,7 @@ class Config:
         self.active_channels: list[int] = []
         self.admin_user_ids: list[int] = []
         self.default_channel_id: int | None = None
+        self.log_channel_id: int | None = None
         self.persona_data: dict = {}
         self.post_settings: dict = {
             "max_tokens": 512,
@@ -40,7 +41,7 @@ class Config:
         self.interaction_settings: dict = {
             "enabled": False,
             "channel_id": None,
-            "max_tokens": 256,
+            "max_tokens": 150,
             "temperature": 0.9,
             "rate_limit_seconds": 300,
             "system_prompt": "",
@@ -50,12 +51,21 @@ class Config:
             "bypass_cooldown": False,
             "can_interact": True,
             "can_use_commands": False,
+            "can_view_logs": False,
         }
-        self.exclusion_list: list[str] = []
+        self.exclusion_list: list[dict] = []
+        self.default_responses: list[str] = [
+            "hmm",
+            "lol",
+            "idk man",
+            "bruh",
+        ]
+        self.system_prompt_template: str = ""
         # Runtime-only (populated by bot, not persisted)
         self._available_channels: list[dict] = []
         self._available_roles: list[dict] = []
         self._interaction_cooldowns: dict[int, float] = {}
+        self._user_names: dict[str, str] = {}
         self._load()
 
         # Ensure the owner is always in admin list
@@ -82,6 +92,7 @@ class Config:
         self.active_channels = data.get("active_channels", [])
         self.admin_user_ids = data.get("admin_user_ids", [])
         self.default_channel_id = data.get("default_channel_id")
+        self.log_channel_id = data.get("log_channel_id")
         self.persona_data = data.get("persona", {})
         if "post_settings" in data:
             ps = data["post_settings"]
@@ -98,18 +109,31 @@ class Config:
         self.role_permissions = data.get("role_permissions", {})
         if "default_permissions" in data:
             self.default_permissions.update(data["default_permissions"])
-        self.exclusion_list = data.get("exclusion_list", [])
+        raw_exclusions = data.get("exclusion_list", [])
+        # Migrate old string-only format to {topic, severity} dicts
+        self.exclusion_list = [
+            e if isinstance(e, dict) else {"topic": e, "severity": 3}
+            for e in raw_exclusions
+        ]
+        if "default_responses" in data:
+            self.default_responses = data["default_responses"]
+        self.system_prompt_template = data.get("system_prompt_template", "")
+        self.bot_enabled: bool = data.get("bot_enabled", True)
 
     def _to_dict(self) -> dict:
         d: dict = {
             "active_channels": self.active_channels,
             "admin_user_ids": self.admin_user_ids,
             "default_channel_id": self.default_channel_id,
+            "log_channel_id": self.log_channel_id,
             "post_settings": self.post_settings,
             "interaction_settings": self.interaction_settings,
             "role_permissions": self.role_permissions,
             "default_permissions": self.default_permissions,
             "exclusion_list": self.exclusion_list,
+            "default_responses": self.default_responses,
+            "system_prompt_template": self.system_prompt_template,
+            "bot_enabled": self.bot_enabled,
         }
         if self.persona_data:
             d["persona"] = self.persona_data
@@ -170,4 +194,12 @@ class Config:
 
     def set_default_channel(self, channel_id: int | None):
         self.default_channel_id = channel_id
+        self.save()
+
+    def set_log_channel(self, channel_id: int | None):
+        self.log_channel_id = channel_id
+        self.save()
+
+    def set_bot_enabled(self, enabled: bool):
+        self.bot_enabled = enabled
         self.save()
