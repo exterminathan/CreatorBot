@@ -46,7 +46,9 @@ _MAX_EXCLUSION_RETRIES = 3
 
 
 def _find_exclusion_violations(text: str, exclusion_list: list[dict]) -> list[str]:
-    """Return topics (severity >= 2) whose word/phrase appears in text."""
+    """Return topics (severity >= 2) whose word/phrase appears in text.
+
+    Also detects asterisk-censored variants    """
     violations: list[str] = []
     for entry in exclusion_list:
         if entry.get("severity", 3) < 2:
@@ -54,8 +56,15 @@ def _find_exclusion_violations(text: str, exclusion_list: list[dict]) -> list[st
         topic = entry.get("topic", "").strip()
         if not topic:
             continue
-        pattern = r'\b' + re.escape(topic) + r'\b'
-        if re.search(pattern, text, re.IGNORECASE):
+        # Exact match
+        exact_pattern = r'\b' + re.escape(topic) + r'\b'
+        if re.search(exact_pattern, text, re.IGNORECASE):
+            violations.append(topic)
+            continue
+        # Asterisk-censored variant: each letter may be replaced with *
+        fuzzy_chars = [f'[{re.escape(c)}*]' if c.isalpha() else re.escape(c) for c in topic]
+        fuzzy_pattern = r'\b' + ''.join(fuzzy_chars) + r'\b'
+        if re.search(fuzzy_pattern, text, re.IGNORECASE):
             violations.append(topic)
     return violations
 
@@ -277,6 +286,12 @@ class CyBot(commands.Bot):
                 "generate_post exclusion violation (attempt %d/%d): %s",
                 attempt + 1, _MAX_EXCLUSION_RETRIES, violations,
             )
+        else:
+            log.error(
+                "generate_post: all %d retries exhausted with exclusion violations — using fallback",
+                _MAX_EXCLUSION_RETRIES,
+            )
+            return self._fallback_response()
         return _surface_links(text, extra_links=prompt_links)
 
     async def generate_interaction(self, user_message: str, user_name: str) -> str:
@@ -305,6 +320,12 @@ class CyBot(commands.Bot):
                 "generate_interaction exclusion violation (attempt %d/%d): %s",
                 attempt + 1, _MAX_EXCLUSION_RETRIES, violations,
             )
+        else:
+            log.error(
+                "generate_interaction: all %d retries exhausted with exclusion violations — using fallback",
+                _MAX_EXCLUSION_RETRIES,
+            )
+            return self._fallback_response()
         return _surface_links(text, extra_links=prompt_links)
 
     # Keep old name as alias for admin cog compatibility
