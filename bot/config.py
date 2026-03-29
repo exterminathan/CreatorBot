@@ -13,14 +13,25 @@ CONFIG_PATH = DATA_DIR / "config.json"
 GCS_OBJECT = "config.json"
 
 
+def _require_env(key: str) -> str:
+    """Return the env var value or raise a clear error if missing."""
+    val = os.environ.get(key)
+    if not val:
+        raise RuntimeError(
+            f"Required environment variable '{key}' is not set. "
+            "Check your .env file or Cloud Run environment variables."
+        )
+    return val
+
+
 class Config:
     """Loads env vars and manages persistent bot state (active channels)."""
 
     def __init__(self):
-        self.bot_token: str = os.environ["DISCORD_BOT_TOKEN"]
-        self.admin_channel_id: int = int(os.environ["ADMIN_CHANNEL_ID"])
-        self.admin_user_id: int = int(os.environ["ADMIN_USER_ID"])
-        self.gemini_api_key: str = os.environ["GEMINI_API_KEY"]
+        self.bot_token: str = _require_env("DISCORD_BOT_TOKEN")
+        self.admin_channel_id: int = int(_require_env("ADMIN_CHANNEL_ID"))
+        self.admin_user_id: int = int(_require_env("ADMIN_USER_ID"))
+        self.gemini_api_key: str = _require_env("GEMINI_API_KEY")
         self.gemini_model: str = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
         self.cy_display_name: str = os.environ.get("CY_DISPLAY_NAME", "Cy")
         self.cy_avatar_url: str | None = os.environ.get("CY_AVATAR_URL") or None
@@ -51,6 +62,7 @@ class Config:
             "bypass_cooldown": False,
             "can_interact": True,
             "can_use_commands": False,
+            "can_moderate": False,
             "can_view_logs": False,
         }
         self.exclusion_list: list[dict] = []
@@ -63,11 +75,23 @@ class Config:
             "bruh",
         ]
         self.system_prompt_template: str = ""
+        self.welcome_channel_id: int | None = None
+        self.mod_log_channel_id: int | None = None
+        self.welcome_message: str = ""
+        self.giveaways: list[dict] = []
+        self.giveaway_settings: dict = {
+            "default_channel_id": None,
+            "embed_color": "#5865F2",
+            "manager_role_ids": [],
+        }
+        self.forms: list[dict] = []
+        self.form_submissions: list[dict] = []
         # Runtime-only (populated by bot, not persisted)
         self._available_channels: list[dict] = []
         self._available_roles: list[dict] = []
         self._interaction_cooldowns: dict[int, float] = {}
         self._user_names: dict[str, str] = {}
+        self._mod_action_log: list[dict] = []  # in-memory only, not persisted
         self._load()
 
         # Ensure the owner is always in admin list
@@ -91,10 +115,30 @@ class Config:
         if not data and CONFIG_PATH.exists():
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        self.active_channels = data.get("active_channels", [])
-        self.admin_user_ids = data.get("admin_user_ids", [])
-        self.default_channel_id = data.get("default_channel_id")
-        self.log_channel_id = data.get("log_channel_id")
+
+        if not isinstance(data, dict):
+            log.error("config.json root is not a JSON object — resetting to defaults")
+            data = {}
+
+        # Coerce active_channels and admin_user_ids to lists of ints, tolerating
+        # string IDs written by older versions or manual edits.
+        def _to_int_list(raw: object) -> list[int]:
+            if not isinstance(raw, list):
+                return []
+            result = []
+            for item in raw:
+                try:
+                    result.append(int(item))
+                except (TypeError, ValueError):
+                    log.warning("Skipping non-integer ID in config: %r", item)
+            return result
+
+        self.active_channels = _to_int_list(data.get("active_channels", []))
+        self.admin_user_ids = _to_int_list(data.get("admin_user_ids", []))
+        _raw_default = data.get("default_channel_id")
+        self.default_channel_id = int(_raw_default) if _raw_default is not None else None
+        _raw_log = data.get("log_channel_id")
+        self.log_channel_id = int(_raw_log) if _raw_log is not None else None
         self.persona_data = data.get("persona", {})
         if "post_settings" in data:
             ps = data["post_settings"]
@@ -127,6 +171,16 @@ class Config:
         self.channel_permissions = data.get("channel_permissions", {})
         self.system_prompt_template = data.get("system_prompt_template", "")
         self.bot_enabled: bool = data.get("bot_enabled", True)
+        _raw_welcome = data.get("welcome_channel_id")
+        self.welcome_channel_id = int(_raw_welcome) if _raw_welcome is not None else None
+        _raw_mod_log = data.get("mod_log_channel_id")
+        self.mod_log_channel_id = int(_raw_mod_log) if _raw_mod_log is not None else None
+        self.welcome_message = data.get("welcome_message", "")
+        self.giveaways = data.get("giveaways", [])
+        if "giveaway_settings" in data:
+            self.giveaway_settings.update(data["giveaway_settings"])
+        self.forms = data.get("forms", [])
+        self.form_submissions = data.get("form_submissions", [])
 
     def _to_dict(self) -> dict:
         d: dict = {
@@ -144,6 +198,13 @@ class Config:
             "default_responses": self.default_responses,
             "system_prompt_template": self.system_prompt_template,
             "bot_enabled": self.bot_enabled,
+            "welcome_channel_id": self.welcome_channel_id,
+            "mod_log_channel_id": self.mod_log_channel_id,
+            "welcome_message": self.welcome_message,
+            "giveaways": self.giveaways,
+            "giveaway_settings": self.giveaway_settings,
+            "forms": self.forms,
+            "form_submissions": self.form_submissions,
         }
         if self.persona_data:
             d["persona"] = self.persona_data
@@ -212,4 +273,71 @@ class Config:
 
     def set_bot_enabled(self, enabled: bool):
         self.bot_enabled = enabled
+        self.save()
+
+    # -- giveaway management ------------------------------------------------
+
+    def add_giveaway(self, giveaway: dict) -> None:
+        self.giveaways.append(giveaway)
+        self.save()
+
+    def get_giveaway(self, message_id: str) -> dict | None:
+        for g in self.giveaways:
+            if g.get("message_id") == str(message_id):
+                return g
+        return None
+
+    def update_giveaway(self, message_id: str, updates: dict) -> bool:
+        for g in self.giveaways:
+            if g.get("message_id") == str(message_id):
+                g.update(updates)
+                self.save()
+                return True
+        return False
+
+    def remove_giveaway(self, message_id: str) -> bool:
+        before = len(self.giveaways)
+        self.giveaways = [g for g in self.giveaways if g.get("message_id") != str(message_id)]
+        if len(self.giveaways) != before:
+            self.save()
+            return True
+        return False
+
+    # -- forms management ---------------------------------------------------
+
+    def add_form(self, form: dict) -> None:
+        self.forms.append(form)
+        self.save()
+
+    def get_form(self, form_id: str) -> dict | None:
+        for f in self.forms:
+            if f.get("id") == form_id:
+                return f
+        return None
+
+    def update_form(self, form_id: str, updates: dict) -> bool:
+        for f in self.forms:
+            if f.get("id") == form_id:
+                f.update(updates)
+                self.save()
+                return True
+        return False
+
+    def remove_form(self, form_id: str) -> bool:
+        before = len(self.forms)
+        self.forms = [f for f in self.forms if f.get("id") != form_id]
+        if len(self.forms) != before:
+            # Also purge submissions for this form
+            self.form_submissions = [
+                s for s in self.form_submissions if s.get("form_id") != form_id
+            ]
+            self.save()
+            return True
+        return False
+
+    def add_form_submission(self, submission: dict) -> None:
+        self.form_submissions.append(submission)
+        # Cap total stored submissions to avoid unbounded growth
+        if len(self.form_submissions) > 2000:
+            self.form_submissions = self.form_submissions[-2000:]
         self.save()

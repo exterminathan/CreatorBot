@@ -105,6 +105,9 @@ async def get_config(request: web.Request) -> web.Response:
         "system_prompt_template": cfg.system_prompt_template,
         "channel_permissions": cfg.channel_permissions,
         "bot_enabled": cfg.bot_enabled,
+        "welcome_channel_id": str(cfg.welcome_channel_id) if cfg.welcome_channel_id else None,
+        "mod_log_channel_id": str(cfg.mod_log_channel_id) if cfg.mod_log_channel_id else None,
+        "welcome_message": cfg.welcome_message,
     })
 
 
@@ -178,6 +181,14 @@ async def put_config(request: web.Request) -> web.Response:
         cfg.system_prompt_template = str(body["system_prompt_template"])
     if "bot_enabled" in body:
         cfg.bot_enabled = bool(body["bot_enabled"])
+    if "welcome_channel_id" in body:
+        val = body["welcome_channel_id"]
+        cfg.welcome_channel_id = int(val) if val else None
+    if "mod_log_channel_id" in body:
+        val = body["mod_log_channel_id"]
+        cfg.mod_log_channel_id = int(val) if val else None
+    if "welcome_message" in body:
+        cfg.welcome_message = str(body["welcome_message"])
     cfg.save()
     return web.json_response({"status": "ok"})
 
@@ -258,9 +269,145 @@ async def get_status(request: web.Request) -> web.Response:
     return web.json_response({"bot_enabled": cfg.bot_enabled})
 
 
+@_require_auth
+async def get_mod_log(request: web.Request) -> web.Response:
+    cfg = request.app["config"]
+    # Return most-recent first, up to last 200
+    return web.json_response(list(reversed(cfg._mod_action_log)))
+
+
+@_require_auth
+async def get_giveaways(request: web.Request) -> web.Response:
+    cfg = request.app["config"]
+    return web.json_response({
+        "giveaways": cfg.giveaways,
+        "settings": cfg.giveaway_settings,
+    })
+
+
+@_require_auth
+async def put_giveaway_settings(request: web.Request) -> web.Response:
+    cfg = request.app["config"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid request"}, status=400)
+    if "default_channel_id" in body:
+        val = body["default_channel_id"]
+        cfg.giveaway_settings["default_channel_id"] = int(val) if val else None
+    if "embed_color" in body:
+        color = str(body["embed_color"])
+        if color.startswith("#") and len(color) in (4, 7):
+            cfg.giveaway_settings["embed_color"] = color
+    if "manager_role_ids" in body:
+        cfg.giveaway_settings["manager_role_ids"] = [
+            int(r) for r in body["manager_role_ids"] if str(r).strip()
+        ]
+    cfg.save()
+    return web.json_response({"status": "ok"})
+
+
+@_require_auth
+async def giveaway_end(request: web.Request) -> web.Response:
+    message_id = request.match_info["message_id"]
+    bot = request.app["bot_holder"]["bot"]
+    if bot is None:
+        return web.json_response({"error": "Bot not available"}, status=503)
+    giveaway_cog = bot.cogs.get("GiveawayCog")
+    if giveaway_cog is None:
+        return web.json_response({"error": "Giveaway cog not loaded"}, status=503)
+    import asyncio
+    import concurrent.futures
+    fut = asyncio.run_coroutine_threadsafe(giveaway_cog.manager.end(message_id), bot.loop)
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: fut.result(timeout=10)
+        )
+    except concurrent.futures.TimeoutError:
+        return web.json_response({"error": "Timed out ending giveaway"}, status=504)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+    if result is None:
+        return web.json_response({"error": "Giveaway not found or already ended"}, status=404)
+    return web.json_response({"status": "ok", "giveaway": result})
+
+
+@_require_auth
+async def giveaway_reroll(request: web.Request) -> web.Response:
+    message_id = request.match_info["message_id"]
+    bot = request.app["bot_holder"]["bot"]
+    if bot is None:
+        return web.json_response({"error": "Bot not available"}, status=503)
+    giveaway_cog = bot.cogs.get("GiveawayCog")
+    if giveaway_cog is None:
+        return web.json_response({"error": "Giveaway cog not loaded"}, status=503)
+    import asyncio
+    import concurrent.futures
+    fut = asyncio.run_coroutine_threadsafe(giveaway_cog.manager.end(message_id, reroll=True), bot.loop)
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: fut.result(timeout=10)
+        )
+    except concurrent.futures.TimeoutError:
+        return web.json_response({"error": "Timed out rerolling giveaway"}, status=504)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+    if result is None:
+        return web.json_response({"error": "Giveaway not found"}, status=404)
+    return web.json_response({"status": "ok", "giveaway": result})
+
+
+@_require_auth
+async def giveaway_delete(request: web.Request) -> web.Response:
+    message_id = request.match_info["message_id"]
+    bot = request.app["bot_holder"]["bot"]
+    if bot is None:
+        return web.json_response({"error": "Bot not available"}, status=503)
+    giveaway_cog = bot.cogs.get("GiveawayCog")
+    if giveaway_cog is None:
+        return web.json_response({"error": "Giveaway cog not loaded"}, status=503)
+    import asyncio
+    import concurrent.futures
+    fut = asyncio.run_coroutine_threadsafe(giveaway_cog.manager.delete(message_id), bot.loop)
+    try:
+        deleted = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: fut.result(timeout=10)
+        )
+    except concurrent.futures.TimeoutError:
+        return web.json_response({"error": "Timed out deleting giveaway"}, status=504)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+    if not deleted:
+        return web.json_response({"error": "Giveaway not found"}, status=404)
+    return web.json_response({"status": "ok"})
+
+
+@_require_auth
+async def giveaway_toggle_exclude(request: web.Request) -> web.Response:
+    cfg = request.app["config"]
+    message_id = request.match_info["message_id"]
+    user_id_str = request.match_info["user_id"]
+    try:
+        user_id = int(user_id_str)
+    except ValueError:
+        return web.json_response({"error": "Invalid user_id"}, status=400)
+    giveaway = cfg.get_giveaway(message_id)
+    if giveaway is None:
+        return web.json_response({"error": "Giveaway not found"}, status=404)
+    excluded: list[int] = giveaway.get("excluded_entries", [])
+    if user_id in excluded:
+        excluded.remove(user_id)
+        state = "included"
+    else:
+        excluded.append(user_id)
+        state = "excluded"
+    cfg.update_giveaway(message_id, {"excluded_entries": excluded})
+    return web.json_response({"status": "ok", "state": state, "excluded_entries": excluded})
+
+
 # ── App factory ─────────────────────────────────────────────────────────────
 
-def create_app(config, persona) -> web.Application:
+def create_app(config, persona, bot=None) -> web.Application:
     session_token = secrets.token_hex(32)
 
     app = web.Application()
@@ -268,6 +415,7 @@ def create_app(config, persona) -> web.Application:
     app["persona"] = persona
     app["password"] = config.web_password
     app["session_token"] = session_token
+    app["bot_holder"] = {"bot": bot}  # pre-set before startup; update ["bot"] key later without touching app state
 
     app.router.add_get("/", health)
     app.router.add_get("/avatar", avatar)
@@ -283,6 +431,13 @@ def create_app(config, persona) -> web.Application:
     app.router.add_post("/api/bot-control", bot_control)
     app.router.add_get("/api/preview_prompts", get_preview_prompts)
     app.router.add_get("/api/status", get_status)
+    app.router.add_get("/api/mod-log", get_mod_log)
+    app.router.add_get("/api/giveaways", get_giveaways)
+    app.router.add_put("/api/giveaway-settings", put_giveaway_settings)
+    app.router.add_post("/api/giveaways/{message_id}/end", giveaway_end)
+    app.router.add_post("/api/giveaways/{message_id}/reroll", giveaway_reroll)
+    app.router.add_delete("/api/giveaways/{message_id}", giveaway_delete)
+    app.router.add_post("/api/giveaways/{message_id}/toggle-exclude/{user_id}", giveaway_toggle_exclude)
 
     if not config.web_password:
         pw = secrets.token_urlsafe(16)
@@ -471,6 +626,29 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
 .chan-perm-btn{padding:2px 7px;border-radius:3px;border:1px solid transparent;font-size:10px;font-weight:700;letter-spacing:.04em;cursor:pointer;transition:background .15s,color .15s;margin-left:4px}
 .chan-perm-btn.active{background:#248046;color:#fff;border-color:#248046}
 .chan-perm-btn.inactive{background:var(--bg-light);color:var(--text-muted);border-color:var(--border)}
+/* ── Channel matrix ── */
+.ch-matrix{width:100%;border-collapse:collapse;font-size:13px;min-width:640px}
+.ch-matrix th{padding:7px 10px;text-align:center;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text-muted);border-bottom:2px solid var(--border);white-space:nowrap;cursor:default}
+.ch-matrix th:first-child{text-align:left;min-width:160px}
+.ch-matrix td{padding:5px 8px;text-align:center;border-bottom:1px solid var(--border)}
+.ch-matrix td:first-child{text-align:left;font-weight:500;white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis}
+.ch-matrix tbody tr:hover{background:var(--bg-elevated,var(--bg-light))}
+.ch-tog{display:inline-flex;align-items:center;justify-content:center;width:52px;height:24px;border-radius:4px;border:1px solid transparent;font-size:11px;font-weight:700;letter-spacing:.04em;cursor:pointer;transition:background .12s,color .12s}
+.ch-tog.on{background:#248046;color:#fff;border-color:#248046}
+.ch-tog.off{background:var(--bg-light);color:var(--text-muted);border-color:var(--border)}
+.ch-excl{display:inline-flex;align-items:center;justify-content:center;width:32px;height:24px;border-radius:4px;border:1px solid transparent;font-size:16px;line-height:1;cursor:pointer;transition:background .12s,color .12s}
+.ch-excl.on{background:#5865f2;color:#fff;border-color:#5865f2}
+.ch-excl.off{background:var(--bg-light);color:var(--text-muted);border-color:var(--border)}
+/* ── Perm matrix ── */
+.pm-matrix{min-width:unset}
+.pm-matrix th{padding:7px 6px;font-size:10px}
+.pm-matrix th:first-child{min-width:120px}
+.pm-matrix td{padding:5px 4px}
+.pm-cell{display:inline-flex;align-items:center;justify-content:center;width:36px;height:24px;border-radius:4px;border:1px solid transparent;font-size:13px;cursor:pointer;transition:background .12s,color .12s}
+.pm-cell.on{background:#248046;color:#fff;border-color:#248046}
+.pm-cell.off{background:#b03030;color:#fff;border-color:#8b2020}
+.pm-cell.inherit{background:var(--bg-light);color:var(--text-muted);border-color:var(--border)}
+.pm-cell.locked{cursor:default;background:none;border-color:transparent;opacity:.85}
 </style>
 </head>
 <body>
@@ -495,7 +673,8 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
       <hr class="sidebar-sep">
       <div class="sidebar-item" data-section="post-settings" onclick="showSection('post-settings')">Post Settings</div>
       <div class="sidebar-item" data-section="interaction-settings" onclick="showSection('interaction-settings')">Interaction Settings</div>
-      <div class="sidebar-item" data-section="logging" onclick="showSection('logging')">Logging</div>      <hr class=\"sidebar-sep\">
+      <div class="sidebar-item" data-section="moderation" onclick="showSection('moderation')">Moderation</div>      <hr class=\"sidebar-sep\">
+      <div class="sidebar-item" data-section="giveaways" onclick="showSection('giveaways')">🎉 Giveaways</div>      <hr class=\"sidebar-sep\">
       <div class="sidebar-item" data-section="permissions" onclick="showSection('permissions')">Permissions</div>    </nav>
 
     <!-- Content -->
@@ -536,11 +715,16 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
       <!-- ── Channels ── -->
       <div id="section-channels" class="section">
         <h2 class="section-title">Channels</h2>
-        <p class="section-desc">Active channels where Cy can post. Star sets the default for /cy newpost. POST and INTERACT toggles control what actions each channel allows.</p>
-        <div id="channel-list"></div>
-        <div class="add-row">
-          <select id="add-channel-select" class="form-input"><option value="">&#8212; Select a channel &#8212;</option></select>
-          <button class="btn btn-primary" onclick="addChannel()">Add</button>
+        <p class="section-desc">Add channels Cy has access to, then use the matrix to control exactly what each one can do.</p>
+        <div class="add-row" style="margin-bottom:20px">
+          <select id="add-channel-select" class="form-input"><option value="">&#8212; Select a channel to add &#8212;</option></select>
+          <button class="btn btn-primary" onclick="addChannel()">Add Channel</button>
+        </div>
+        <div style="overflow-x:auto">
+          <table id="channel-matrix" class="ch-matrix">
+            <thead id="channel-matrix-head"></thead>
+            <tbody id="channel-matrix-body"></tbody>
+          </table>
         </div>
       </div>
 
@@ -708,17 +892,6 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
           </label>
         </div>
         <div class="form-group">
-          <label class="form-label">Interaction Channels</label>
-          <p class="form-hint">Channels where members can @Cy. Leave empty to allow all active channels. Each must also be in the active channels list.</p>
-          <div id="interaction-channels-list" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px"></div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <select class="form-input" id="interaction-channel-add-select" style="flex:1">
-              <option value="">\\u2014 Add a channel \\u2014</option>
-            </select>
-            <button class="btn btn-sm" onclick="addInteractionChannel()" style="white-space:nowrap">Add</button>
-          </div>
-        </div>
-        <div class="form-group">
           <label class="form-label">Rate Limit (seconds)</label>
           <p class="form-hint">Cooldown per user between interactions. Default: 300 (5 minutes)</p>
           <input type="number" class="form-input" id="interaction-rate-limit" min="0" max="86400">
@@ -737,41 +910,95 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
         <button class="btn btn-primary" onclick="saveInteractionSettings()">Save Interaction Settings</button>
       </div>
       <!-- ── Logging ── -->
-      <div id="section-logging" class="section">
-        <h2 class="section-title">Logging</h2>
-        <p class="section-desc">Send bot activity logs to a dedicated Discord channel. Posts, raw messages, interactions, enable/disable events, and errors will all appear there.</p>
+      <!-- ── Moderation ── -->
+      <div id="section-moderation" class="section">
+        <h2 class="section-title">Moderation</h2>
+        <p class="section-desc">Configure welcome messages and view recent moderation actions. Bot log, mod log, and welcome channel destinations are configured in the Channels tab.</p>
         <div class="form-group">
-          <label class="form-label">Log Channel</label>
-          <p class="form-hint">Select the channel where the bot will send activity logs. Leave blank to disable.</p>
-          <select class="form-input" id="log-channel-id">
-            <option value="">\u2014 Disabled \u2014</option>
+          <label class="form-label">Welcome Message</label>
+          <p class="form-hint">Custom text for the welcome embed. Use <code>{user}</code> for the mention and <code>{server}</code> for the server name. Leave blank for the default message.</p>
+          <textarea class="form-textarea" id="welcome-message" rows="2" placeholder="Hey {user}, welcome to {server}!"></textarea>
+        </div>
+        <button class="btn btn-primary" onclick="saveWelcomeSettings()" style="margin-bottom:24px">Save Welcome Message</button>
+
+        <hr class="divider">
+
+        <div class="form-group">
+          <label class="form-label">Recent Mod Actions</label>
+          <p class="form-hint">Last 200 moderation actions performed via slash commands. Resets on bot restart. Click \u21bb to refresh.</p>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+            <button class="btn btn-sm" style="background:var(--bg-light)" onclick="loadModLog()">&#8635; Refresh</button>
+            <span id="mod-log-count" style="font-size:12px;color:var(--text-muted)"></span>
+          </div>
+          <div id="mod-log-table-wrap" style="overflow-x:auto">
+            <table id="mod-log-table" style="width:100%;border-collapse:collapse;font-size:13px">
+              <thead>
+                <tr style="color:var(--text-muted);text-align:left;border-bottom:1px solid var(--border)">
+                  <th style="padding:6px 8px;font-weight:600;white-space:nowrap">Time</th>
+                  <th style="padding:6px 8px;font-weight:600">Action</th>
+                  <th style="padding:6px 8px;font-weight:600">Target</th>
+                  <th style="padding:6px 8px;font-weight:600">Moderator</th>
+                  <th style="padding:6px 8px;font-weight:600">Reason</th>
+                  <th style="padding:6px 8px;font-weight:600">Details</th>
+                </tr>
+              </thead>
+              <tbody id="mod-log-body">
+                <tr><td colspan="6" style="padding:16px 8px;color:var(--text-muted);text-align:center">No actions yet</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- \\u2500\\u2500 Giveaways \\u2500\\u2500 -->
+      <div id=\"section-giveaways\" class=\"section\">
+        <h2 class=\"section-title\">&#127881; Giveaways</h2>
+        <p class=\"section-desc\">Manage active and past giveaways. Use <code>/giveaway start</code> in Discord to create one. Settings here control defaults used by slash commands.</p>
+
+        <h3 style=\"font-size:14px;font-weight:600;margin-bottom:12px\">Settings</h3>
+        <div class=\"form-group\">
+          <label class=\"form-label\">Default Giveaway Channel</label>
+          <p class=\"form-hint\">Channel <code>/giveaway start</code> posts to when no channel is specified.</p>
+          <select class=\"form-input\" id=\"giveaway-default-channel\">
+            <option value=\"\">&#8212; None (uses current channel) &#8212;</option>
           </select>
         </div>
-        <hr class="divider">
-        <button class="btn btn-primary" onclick="saveLogging()">Save Logging</button>
+        <div class=\"form-group\">
+          <label class=\"form-label\">Manager Role IDs</label>
+          <p class=\"form-hint\">Space-separated role IDs whose members can use <code>/giveaway</code> commands (in addition to admins).</p>
+          <input type=\"text\" class=\"form-input\" id=\"giveaway-manager-roles\" placeholder=\"e.g. 123456789 987654321\">
+        </div>
+        <button class=\"btn btn-primary\" onclick=\"saveGiveawaySettings()\" style=\"margin-bottom:24px\">Save Settings</button>
+
+        <hr class=\"divider\">
+        <h3 style=\"font-size:14px;font-weight:600;margin-bottom:4px\">Active Giveaways</h3>
+        <div style=\"display:flex;align-items:center;gap:8px;margin-bottom:12px\">
+          <button class=\"btn btn-sm\" style=\"background:var(--bg-light)\" onclick=\"loadGiveaways()\">&#8635; Refresh</button>
+          <span id=\"giveaway-active-count\" style=\"font-size:12px;color:var(--text-muted)\"></span>
+        </div>
+        <div id=\"giveaway-active-list\"><p style=\"color:var(--text-muted);font-size:14px\">Loading\\u2026</p></div>
+
+        <hr class=\"divider\">
+        <h3 style=\"font-size:14px;font-weight:600;margin-bottom:12px\">Ended Giveaways</h3>
+        <div id=\"giveaway-ended-list\"><p style=\"color:var(--text-muted);font-size:14px\">Loading\\u2026</p></div>
       </div>
+
       <!-- \\u2500\\u2500 Permissions \\u2500\\u2500 -->
       <div id=\"section-permissions\" class=\"section\">
         <h2 class=\"section-title\">Permissions</h2>
         <p class=\"section-desc\">Control what users can do based on their roles. Uses an \\u201cAllow wins\\u201d model \\u2014 if any of a user\\u2019s roles allows a permission, it\\u2019s granted.</p>
         <div class=\"form-group\">
-          <label class=\"form-label\">Default Permissions</label>
-          <p class=\"form-hint\">Baseline for all users when no role override applies</p>
-          <div id=\"default-perms\"></div>
-        </div>
-        <hr class=\"divider\">
-        <div class=\"form-group\">
-          <label class=\"form-label\">Role Overrides</label>
-          <p class=\"form-hint\">Set per-role permission overrides. Select a role to configure.</p>
-          <select class=\"form-input\" id=\"perm-role-select\" onchange=\"renderSelectedRolePerms()\" style=\"margin-bottom:16px\">
-            <option value=\"\">\\u2014 Select a role \\u2014</option>
-          </select>
-          <div id=\"role-perms\" style=\"display:none\">
-            <div id=\"role-perm-toggles\"></div>
-            <div style=\"display:flex;gap:8px;margin-top:16px\">
-              <button class=\"btn btn-primary\" onclick=\"saveRolePerms()\">Save Role</button>
-              <button class=\"btn btn-danger\" onclick=\"resetRolePerms()\">Reset to Inherit</button>
-            </div>
+          <div style=\"display:flex;align-items:center;gap:8px;margin-bottom:16px\">
+            <select class=\"form-input\" id=\"perm-role-select\" style=\"flex:1\">
+              <option value=\"\">\\u2014 Add a role override \\u2014</option>
+            </select>
+            <button class=\"btn btn-primary\" onclick=\"addRoleToMatrix()\">Add</button>
+          </div>
+          <div style=\"overflow-x:auto\">
+            <table id=\"perm-matrix\" class=\"ch-matrix pm-matrix\">
+              <thead id=\"perm-matrix-head\"></thead>
+              <tbody id=\"perm-matrix-body\"></tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -786,10 +1013,20 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
 let token = sessionStorage.getItem('cybot_token');
 let config = {};
 let persona = {};
+let _everyoneLocked = true;
 
 const CHAN_PERMS = [
   {key: 'can_post', label: 'POST', title: 'Allow /cy newpost to target this channel'},
   {key: 'can_interact', label: 'INTERACT', title: 'Allow @Cy interaction replies in this channel'},
+];
+/* Matrix column definitions — toggle cols use channel_permissions, excl cols use top-level config fields */
+const MATRIX_COLS = [
+  {type:'toggle', key:'can_post',    label:'Post',    title:'Allow /cy newpost to send here'},
+  {type:'toggle', key:'can_interact',label:'@Cy',     title:'Allow @Cy mention replies here'},
+  {type:'excl', field:'default_channel_id', label:'Default', title:'Default channel for /cy newpost (one channel only)'},
+  {type:'excl', field:'log_channel_id',     label:'Bot Log', title:'Bot activity log destination (one channel only)'},
+  {type:'excl', field:'mod_log_channel_id', label:'Mod Log', title:'Moderation action log destination (one channel only)'},
+  {type:'excl', field:'welcome_channel_id', label:'Welcome', title:'Send member welcome embeds here (one channel only)'},
 ];
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const _dSavePost = debounce(savePostSettings, 800);
@@ -833,8 +1070,9 @@ async function loadData() {
 async function renderAll() {
   renderGeneral(); renderAdmins(); renderChannels(); renderPersona(); renderMessages(); renderVideoLines();
   await renderSystemPrompts();
-  renderPostSettings(); renderInteractionSettings(); renderLogging();
-  populateChannelDropdown(); renderDefaultPerms(); populateRoleSelect(); renderExclusions(); renderSlang(); renderDefaultResponses();
+  renderPostSettings(); renderInteractionSettings(); renderModeration();
+  renderPermsMatrix(); populateRoleSelect(); renderExclusions(); renderSlang(); renderDefaultResponses();
+  renderGiveawaySettings();
   setupAutoSave();
 }
 
@@ -845,6 +1083,8 @@ function showSection(name) {
   document.getElementById('section-' + name).classList.add('active');
   const si = document.querySelector('.sidebar-item[data-section="' + name + '"]');
   if (si) si.classList.add('active');
+  if (name === 'moderation') loadModLog();
+  if (name === 'giveaways') loadGiveaways();
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -948,52 +1188,88 @@ async function setChannelPerm(cid, key, val) {
 }
 
 function renderChannels() {
-  const el = document.getElementById('channel-list');
-  el.innerHTML = '';
-  for (const cid of config.active_channels) {
-    const isDefault = (cid === config.default_channel_id);
-    const item = document.createElement('div');
-    item.className = 'list-item';
-    item.style.flexWrap = 'wrap';
-    const left = document.createElement('div');
-    left.style.cssText = 'display:flex;align-items:center;gap:6px;flex:1;flex-wrap:wrap;min-width:0';
-    const nameSpan = document.createElement('span');
-    nameSpan.style.fontWeight = '500';
-    nameSpan.textContent = channelName(cid);
-    left.appendChild(nameSpan);
-    if (isDefault) {
-      const badge = document.createElement('span');
-      badge.className = 'badge badge-default';
-      badge.textContent = 'DEFAULT';
-      left.appendChild(badge);
+  const head = document.getElementById('channel-matrix-head');
+  const body = document.getElementById('channel-matrix-body');
+  if (!head || !body) return;
+
+  // Header
+  head.innerHTML = '';
+  const hrow = document.createElement('tr');
+  const thName = document.createElement('th');
+  thName.textContent = 'Channel';
+  thName.style.textAlign = 'left';
+  hrow.appendChild(thName);
+  for (const col of MATRIX_COLS) {
+    const th = document.createElement('th');
+    th.textContent = col.label;
+    th.title = col.title;
+    hrow.appendChild(th);
+  }
+  hrow.appendChild(document.createElement('th')); // remove col
+  head.appendChild(hrow);
+
+  // Rows
+  body.innerHTML = '';
+  if (!config.active_channels || !config.active_channels.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = MATRIX_COLS.length + 2;
+    td.style.cssText = 'padding:20px 0;text-align:center;color:var(--text-muted);font-style:italic';
+    td.textContent = 'No channels added yet';
+    tr.appendChild(td);
+    body.appendChild(tr);
+  } else {
+    for (const cid of config.active_channels) {
+      const tr = document.createElement('tr');
+
+      // Channel name
+      const tdName = document.createElement('td');
+      tdName.textContent = channelName(cid);
+      tdName.title = channelName(cid);
+      tr.appendChild(tdName);
+
+      // Matrix cells
+      for (const col of MATRIX_COLS) {
+        const td = document.createElement('td');
+        if (col.type === 'toggle') {
+          const on = getChannelPerm(cid, col.key);
+          const btn = document.createElement('button');
+          btn.className = 'ch-tog ' + (on ? 'on' : 'off');
+          btn.textContent = on ? 'ON' : 'OFF';
+          btn.title = col.title;
+          btn.onclick = () => setChannelPerm(cid, col.key, !getChannelPerm(cid, col.key));
+          td.appendChild(btn);
+        } else {
+          const on = String(config[col.field] || '') === String(cid);
+          const btn = document.createElement('button');
+          btn.className = 'ch-excl ' + (on ? 'on' : 'off');
+          btn.textContent = on ? '\u25cf' : '\u25cb';
+          btn.title = col.title;
+          btn.onclick = () => setExclusive(col.field, cid);
+          td.appendChild(btn);
+        }
+        tr.appendChild(td);
+      }
+
+      // Remove
+      const tdRm = document.createElement('td');
+      const rm = document.createElement('button');
+      rm.className = 'btn btn-danger btn-sm';
+      rm.textContent = 'Remove';
+      rm.onclick = () => removeChannel(cid);
+      tdRm.appendChild(rm);
+      tr.appendChild(tdRm);
+
+      body.appendChild(tr);
     }
-    for (const {key, label, title} of CHAN_PERMS) {
-      const active = getChannelPerm(cid, key);
-      const btn = document.createElement('button');
-      btn.className = 'chan-perm-btn ' + (active ? 'active' : 'inactive');
-      btn.textContent = label;
-      btn.title = title;
-      btn.onclick = () => setChannelPerm(cid, key, !getChannelPerm(cid, key));
-      left.appendChild(btn);
-    }
-    item.appendChild(left);
-    const actions = document.createElement('div');
-    actions.className = 'actions';
-    const star = document.createElement('button');
-    star.className = 'star-btn' + (isDefault ? ' active' : '');
-    star.title = 'Set as default';
-    star.textContent = '\\u2B50';
-    star.onclick = () => setDefault(cid);
-    actions.appendChild(star);
-    const rm = document.createElement('button');
-    rm.className = 'btn btn-danger btn-sm';
-    rm.textContent = 'Remove';
-    rm.onclick = () => removeChannel(cid);
-    actions.appendChild(rm);
-    item.appendChild(actions);
-    el.appendChild(item);
   }
   populateAddChannelDropdown();
+}
+
+async function setExclusive(field, cid) {
+  config[field] = (String(config[field] || '') === String(cid)) ? null : cid;
+  renderChannels();
+  await api('PUT', '/api/config', {[field]: config[field]});
 }
 
 async function addChannel() {
@@ -1017,14 +1293,6 @@ async function removeChannel(cid) {
   if (!r) { await loadData(); return; }
   renderChannels();
   toast('Channel removed');
-}
-
-async function setDefault(cid) {
-  config.default_channel_id = (config.default_channel_id === cid) ? null : cid;
-  const r = await api('PUT', '/api/config', {default_channel_id: config.default_channel_id});
-  if (!r) { await loadData(); return; }
-  renderChannels();
-  toast(config.default_channel_id ? 'Default channel set' : 'Default cleared');
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -1204,65 +1472,6 @@ function renderInteractionSettings() {
   document.getElementById('interaction-rate-limit').value = is_.rate_limit_seconds ?? 300;
   document.getElementById('interaction-max-tokens').value = is_.max_tokens ?? 256;
   document.getElementById('interaction-temperature').value = is_.temperature ?? 0.9;
-  renderInteractionChannelChips();
-}
-
-function renderInteractionChannelChips() {
-  const is_ = config.interaction_settings || {};
-  const ids = is_.channel_ids || [];
-  const container = document.getElementById('interaction-channels-list');
-  if (!container) return;
-  container.innerHTML = '';
-  if (ids.length === 0) {
-    const hint = document.createElement('span');
-    hint.style.cssText = 'font-size:12px;color:var(--text-muted);font-style:italic';
-    hint.textContent = 'All active channels';
-    container.appendChild(hint);
-    return;
-  }
-  for (const cid of ids) {
-    const ch = (window._channels || []).find(c => c.id === String(cid));
-    const label = ch ? '#' + ch.name + (ch.guild ? ' \u00b7 ' + ch.guild : '') : '#' + cid;
-    const chip = document.createElement('div');
-    chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-size:13px';
-    const text = document.createElement('span');
-    text.textContent = label;
-    const btn = document.createElement('button');
-    btn.textContent = '\u00d7';
-    btn.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:15px;line-height:1;padding:0 0 0 4px';
-    btn.onclick = () => removeInteractionChannel(String(cid));
-    chip.appendChild(text);
-    chip.appendChild(btn);
-    container.appendChild(chip);
-  }
-}
-
-async function addInteractionChannel() {
-  const sel = document.getElementById('interaction-channel-add-select');
-  const val = sel.value.trim();
-  if (!val) return;
-  const is_ = config.interaction_settings || {};
-  const ids = [...(is_.channel_ids || [])];
-  if (ids.includes(val)) { toast('Channel already added', 'error'); return; }
-  ids.push(val);
-  const r = await api('PUT', '/api/config', {interaction_settings: {channel_ids: ids}});
-  if (r) {
-    config.interaction_settings.channel_ids = ids;
-    sel.value = '';
-    renderInteractionChannelChips();
-    toast('Channel added');
-  }
-}
-
-async function removeInteractionChannel(cid) {
-  const is_ = config.interaction_settings || {};
-  const ids = (is_.channel_ids || []).filter(id => String(id) !== String(cid));
-  const r = await api('PUT', '/api/config', {interaction_settings: {channel_ids: ids}});
-  if (r) {
-    config.interaction_settings.channel_ids = ids;
-    renderInteractionChannelChips();
-    toast('Channel removed');
-  }
 }
 
 async function saveInteractionSettings() {
@@ -1272,39 +1481,13 @@ async function saveInteractionSettings() {
   const is_ = config.interaction_settings || {};
   const payload = {
     enabled: document.getElementById('interaction-enabled').checked,
-    channel_ids: is_.channel_ids || [],
+    channel_ids: [],
     rate_limit_seconds: isNaN(rl) ? 300 : rl,
     max_tokens: isNaN(mt) ? 256 : mt,
     temperature: isNaN(tp) ? 0.9 : tp,
   };
   const r = await api('PUT', '/api/config', {interaction_settings: payload});
   if (r) { config.interaction_settings = {...(config.interaction_settings || {}), ...payload}; toast('Interaction settings saved'); }
-}
-
-/* ══════════════════════════════════════════════════════════════════════════
-   Logging
-   ══════════════════════════════════════════════════════════════════════════ */
-function populateLogChannelDropdown() {
-  const sel = document.getElementById('log-channel-id');
-  const current = config.log_channel_id || '';
-  sel.innerHTML = '<option value="">\\u2014 Disabled \\u2014</option>';
-  for (const ch of (window._channels || [])) {
-    const opt = document.createElement('option');
-    opt.value = ch.id;
-    opt.textContent = '#' + ch.name + (ch.guild ? ' (' + ch.guild + ')' : '');
-    if (ch.id === current) opt.selected = true;
-    sel.appendChild(opt);
-  }
-}
-
-function renderLogging() {
-  populateLogChannelDropdown();
-}
-
-async function saveLogging() {
-  const val = document.getElementById('log-channel-id').value.trim() || null;
-  const r = await api('PUT', '/api/config', {log_channel_id: val});
-  if (r) { config.log_channel_id = val; toast('Logging saved'); }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -1361,69 +1544,123 @@ async function saveAdditivePrompts() {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   Channel Dropdown
-   ══════════════════════════════════════════════════════════════════════════ */
-function populateChannelDropdown() {
-  const sel = document.getElementById('interaction-channel-add-select');
-  if (!sel) return;
-  sel.innerHTML = '<option value="">\\u2014 Add a channel \\u2014</option>';
-  for (const ch of (window._channels || [])) {
-    const opt = document.createElement('option');
-    opt.value = ch.id;
-    opt.textContent = '#' + ch.name + (ch.guild ? ' (' + ch.guild + ')' : '');
-    sel.appendChild(opt);
-  }
-}
-
-/* ══════════════════════════════════════════════════════════════════════════
    Permissions
    ══════════════════════════════════════════════════════════════════════════ */
 const PERMS = [
-  {key: 'bypass_cooldown', name: 'Bypass Cooldown', desc: 'Skip the rate limit between interactions'},
-  {key: 'can_interact', name: 'Can @Cy', desc: 'Allowed to mention and interact with Cy'},
-  {key: 'can_use_commands', name: 'Use /cy Commands', desc: 'Access to admin slash commands (in admin channel)'},
-  {key: 'can_view_logs', name: 'Can View Logs', desc: 'Allowed to view the bot activity log channel (configure Discord channel perms accordingly)'},
+  {key: 'bypass_cooldown', name: 'Bypass Cooldown', short: 'Cooldown', desc: 'Skip the rate limit between interactions'},
+  {key: 'can_interact', name: 'Can @Cy', short: '@Cy', desc: 'Allowed to mention and interact with Cy'},
+  {key: 'can_use_commands', name: 'Use /cy Commands', short: '/cy', desc: 'Access to admin slash commands (in admin channel)'},
+  {key: 'can_moderate', name: 'Use /mod Commands', short: '/mod', desc: 'Access to all moderation commands (purge, kick, ban, timeout, unban) from any channel'},
+  {key: 'can_view_logs', name: 'Can View Logs', short: 'View Logs', desc: 'Allowed to view the bot activity log channel (configure Discord channel perms accordingly)'},
 ];
 
-function renderDefaultPerms() {
-  const el = document.getElementById('default-perms');
-  el.innerHTML = '';
-  const dp = config.default_permissions || {};
+function renderPermsMatrix() {
+  const head = document.getElementById('perm-matrix-head');
+  const body = document.getElementById('perm-matrix-body');
+  if (!head || !body) return;
+  // Header row
+  head.innerHTML = '';
+  const hr = document.createElement('tr');
+  const thRole = document.createElement('th');
+  thRole.textContent = 'Role';
+  hr.appendChild(thRole);
   for (const p of PERMS) {
-    const row = document.createElement('div');
-    row.className = 'perm-row';
-    const left = document.createElement('div');
-    left.innerHTML = '<div class="perm-name">' + p.name + '</div><div class="perm-desc">' + p.desc + '</div>';
-    row.appendChild(left);
-    const toggle = document.createElement('div');
-    toggle.className = 'perm-toggle';
-    const btnAllow = document.createElement('button');
-    btnAllow.className = 'perm-btn allow' + (dp[p.key] ? ' active' : '');
-    btnAllow.textContent = '\\u2713';
-    btnAllow.onclick = () => setDefaultPerm(p.key, true);
-    toggle.appendChild(btnAllow);
-    const btnDeny = document.createElement('button');
-    btnDeny.className = 'perm-btn deny' + (!dp[p.key] ? ' active' : '');
-    btnDeny.textContent = '\\u2715';
-    btnDeny.onclick = () => setDefaultPerm(p.key, false);
-    toggle.appendChild(btnDeny);
-    row.appendChild(toggle);
-    el.appendChild(row);
+    const th = document.createElement('th');
+    th.title = p.name + ' — ' + p.desc;
+    th.textContent = p.short || p.name;
+    hr.appendChild(th);
   }
+  const thAct = document.createElement('th');
+  hr.appendChild(thAct);
+  head.appendChild(hr);
+  // @everyone row (default_permissions)
+  body.innerHTML = '';
+  body.appendChild(_buildPermRow(null, '@everyone', config.default_permissions || {}, _everyoneLocked));
+  // Role rows
+  for (const [rid, vals] of Object.entries(config.role_permissions || {})) {
+    const role = (window._roles || []).find(r => r.id === rid);
+    body.appendChild(_buildPermRow(rid, role ? role.name : rid, vals, false));
+  }
+}
+
+function _buildPermRow(rid, name, vals, locked) {
+  const tr = document.createElement('tr');
+  const tdName = document.createElement('td');
+  tdName.textContent = name;
+  tr.appendChild(tdName);
+  for (const p of PERMS) {
+    const td = document.createElement('td');
+    const val = vals[p.key];
+    if (rid === null) {
+      // @everyone: only true/false
+      if (locked) {
+        const span = document.createElement('span');
+        span.className = 'pm-cell locked';
+        span.textContent = val ? '\u2713' : '\u2715';
+        span.style.color = val ? '#4ade80' : '#f87171';
+        td.appendChild(span);
+      } else {
+        const btn = document.createElement('button');
+        btn.className = 'pm-cell ' + (val ? 'on' : 'off');
+        btn.textContent = val ? '\u2713' : '\u2715';
+        btn.onclick = () => setDefaultPerm(p.key, !val);
+        td.appendChild(btn);
+      }
+    } else {
+      // Role row: cycle ON → INHERIT → OFF → ON
+      const nextVal = val === true ? null : val === false ? true : false;
+      const btn = document.createElement('button');
+      btn.className = 'pm-cell ' + (val === true ? 'on' : val === false ? 'off' : 'inherit');
+      btn.textContent = val === true ? '\u2713' : val === false ? '\u2715' : '\u2013';
+      btn.title = val === true ? 'Allow (click to inherit)' : val === false ? 'Deny (click to allow)' : 'Inherit default (click to deny)';
+      btn.onclick = () => setRolePerm(rid, p.key, nextVal);
+      td.appendChild(btn);
+    }
+    tr.appendChild(td);
+  }
+  const tdAct = document.createElement('td');
+  if (rid === null) {
+    const lockBtn = document.createElement('button');
+    lockBtn.title = _everyoneLocked ? 'Unlock to edit default permissions' : 'Lock';
+    lockBtn.textContent = _everyoneLocked ? String.fromCodePoint(0x1F512) : String.fromCodePoint(0x1F513);
+    lockBtn.style.cssText = 'background:none;border:none;cursor:pointer;font-size:15px;padding:2px 4px;opacity:.7';
+    lockBtn.onclick = () => { _everyoneLocked = !_everyoneLocked; renderPermsMatrix(); };
+    tdAct.appendChild(lockBtn);
+  } else {
+    const rmBtn = document.createElement('button');
+    rmBtn.title = 'Remove role override';
+    rmBtn.textContent = '\u2715';
+    rmBtn.style.cssText = 'background:none;border:1px solid var(--border);color:var(--text-muted);cursor:pointer;border-radius:4px;width:24px;height:24px;font-size:11px';
+    rmBtn.onclick = () => removeRoleFromMatrix(rid);
+    tdAct.appendChild(rmBtn);
+  }
+  tr.appendChild(tdAct);
+  return tr;
 }
 
 async function setDefaultPerm(key, val) {
   if (!config.default_permissions) config.default_permissions = {};
   config.default_permissions[key] = val;
-  renderDefaultPerms();
+  renderPermsMatrix();
   const r = await api('PUT', '/api/config', {default_permissions: config.default_permissions});
-  if (r) toast('Default permissions saved');
+  if (r) toast('Permissions saved');
+}
+
+async function setRolePerm(rid, key, val) {
+  if (!config.role_permissions) config.role_permissions = {};
+  if (!config.role_permissions[rid]) config.role_permissions[rid] = {};
+  if (val === null) { delete config.role_permissions[rid][key]; } else { config.role_permissions[rid][key] = val; }
+  renderPermsMatrix();
+  const r = await api('PUT', '/api/config', {role_permissions: config.role_permissions});
+  if (r) toast('Permissions saved');
 }
 
 function populateRoleSelect() {
   const sel = document.getElementById('perm-role-select');
-  sel.innerHTML = '<option value="">\\u2014 Select a role \\u2014</option>';
+  sel.innerHTML = '<option value="">\u2014 Add a role override \u2014</option>';
+  const added = Object.keys(config.role_permissions || {});
   for (const role of (window._roles || [])) {
+    if (added.includes(role.id)) continue;
     const opt = document.createElement('option');
     opt.value = role.id;
     opt.textContent = role.name;
@@ -1431,62 +1668,20 @@ function populateRoleSelect() {
   }
 }
 
-function renderSelectedRolePerms() {
-  const roleId = document.getElementById('perm-role-select').value;
-  const container = document.getElementById('role-perms');
-  if (!roleId) { container.style.display = 'none'; return; }
-  container.style.display = 'block';
-  const el = document.getElementById('role-perm-toggles');
-  el.innerHTML = '';
-  const rp = (config.role_permissions || {})[roleId] || {};
-  for (const p of PERMS) {
-    const val = rp[p.key];
-    const row = document.createElement('div');
-    row.className = 'perm-row';
-    const left = document.createElement('div');
-    left.innerHTML = '<div class="perm-name">' + p.name + '</div><div class="perm-desc">' + p.desc + '</div>';
-    row.appendChild(left);
-    const toggle = document.createElement('div');
-    toggle.className = 'perm-toggle';
-    const btnAllow = document.createElement('button');
-    btnAllow.className = 'perm-btn allow' + (val === true ? ' active' : '');
-    btnAllow.textContent = '\\u2713';
-    btnAllow.onclick = () => setRolePerm(roleId, p.key, true);
-    toggle.appendChild(btnAllow);
-    const btnInherit = document.createElement('button');
-    btnInherit.className = 'perm-btn inherit' + (val == null ? ' active' : '');
-    btnInherit.textContent = '/';
-    btnInherit.onclick = () => setRolePerm(roleId, p.key, null);
-    toggle.appendChild(btnInherit);
-    const btnDeny = document.createElement('button');
-    btnDeny.className = 'perm-btn deny' + (val === false ? ' active' : '');
-    btnDeny.textContent = '\\u2715';
-    btnDeny.onclick = () => setRolePerm(roleId, p.key, false);
-    toggle.appendChild(btnDeny);
-    row.appendChild(toggle);
-    el.appendChild(row);
-  }
-}
-
-function setRolePerm(roleId, key, val) {
+async function addRoleToMatrix() {
+  const sel = document.getElementById('perm-role-select');
+  const rid = sel.value;
+  if (!rid) return;
   if (!config.role_permissions) config.role_permissions = {};
-  if (!config.role_permissions[roleId]) config.role_permissions[roleId] = {};
-  config.role_permissions[roleId][key] = val;
-  renderSelectedRolePerms();
-}
-
-async function saveRolePerms() {
+  if (!config.role_permissions[rid]) config.role_permissions[rid] = {};
   const r = await api('PUT', '/api/config', {role_permissions: config.role_permissions});
-  if (r) toast('Role permissions saved');
+  if (r) { renderPermsMatrix(); populateRoleSelect(); toast('Role added'); }
 }
 
-async function resetRolePerms() {
-  const roleId = document.getElementById('perm-role-select').value;
-  if (!roleId) return;
-  if (config.role_permissions) delete config.role_permissions[roleId];
-  renderSelectedRolePerms();
+async function removeRoleFromMatrix(rid) {
+  if (config.role_permissions) delete config.role_permissions[rid];
   const r = await api('PUT', '/api/config', {role_permissions: config.role_permissions || {}});
-  if (r) toast('Role permissions reset');
+  if (r) { renderPermsMatrix(); populateRoleSelect(); toast('Role removed'); }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -1705,7 +1900,6 @@ function setupAutoSave() {
   bc('interaction-enabled', () => saveInteractionSettings());
   b('interaction-rate-limit', _dSaveInteraction); b('interaction-max-tokens', _dSaveInteraction);
   b('interaction-temperature', _dSaveInteraction);
-  bc('log-channel-id', () => saveLogging());
   b('post-additive-prompt', _dSaveAdditive); b('interaction-additive-prompt', _dSaveAdditive);
   b('persona-name', _dSavePersona); b('persona-bio', _dSavePersona); b('persona-style', _dSavePersona);
 }
@@ -1735,6 +1929,233 @@ document.addEventListener('keydown', e => {
   else if (id === 'add-exclusion-input') addExclusion();
   else if (id === 'add-default-response-input') addDefaultResponse();
 });
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Moderation
+   ══════════════════════════════════════════════════════════════════════════ */
+
+const _MOD_ACTION_COLORS = {
+  kick: '#f0b232', ban: '#da373c', unban: '#248046',
+  timeout: '#f0b232', untimeout: '#5865f2', purge: '#949ba4',
+};
+const _MOD_ACTION_ICONS = {
+  kick: '\\uD83D\\uDC62', ban: '\\uD83D\\uDD28', unban: '\\u2705',
+  timeout: '\\u23F1\\uFE0F', untimeout: '\\u2705', purge: '\\uD83D\\uDDD1\\uFE0F',
+};
+
+function renderModeration() {
+  const wmEl = document.getElementById('welcome-message');
+  if (wmEl) wmEl.value = config.welcome_message || '';
+}
+
+async function saveWelcomeSettings() {
+  const wm = document.getElementById('welcome-message').value;
+  const r = await api('PUT', '/api/config', {welcome_message: wm});
+  if (r) { config.welcome_message = wm; toast('Welcome message saved'); }
+}
+
+async function loadModLog() {
+  const data = await api('GET', '/api/mod-log');
+  if (!data) return;
+  const tbody = document.getElementById('mod-log-body');
+  const countEl = document.getElementById('mod-log-count');
+  if (!tbody) return;
+  if (!data.length) {
+    tbody.innerHTML = '<tr><td colspan="6" style="padding:16px 8px;color:var(--text-muted);text-align:center">No actions recorded yet</td></tr>';
+    if (countEl) countEl.textContent = '';
+    return;
+  }
+  if (countEl) countEl.textContent = data.length + ' action' + (data.length !== 1 ? 's' : '');
+  tbody.innerHTML = '';
+  for (const entry of data) {
+    const tr = document.createElement('tr');
+    tr.style.borderBottom = '1px solid var(--border)';
+    const action = (entry.action || '').toLowerCase();
+    const color = _MOD_ACTION_COLORS[action] || '#5865f2';
+    const icon = _MOD_ACTION_ICONS[action] || '\\uD83D\\uDEE1\\uFE0F';
+    const ts = entry.ts ? new Date(entry.ts).toLocaleString() : '';
+    const cells = [
+      '<td style="padding:6px 8px;white-space:nowrap;color:var(--text-muted);font-size:12px">' + escHtml(ts) + '</td>',
+      '<td style="padding:6px 8px;white-space:nowrap"><span style="color:' + color + ';font-weight:600">' + icon + ' ' + escHtml(entry.action || '') + '</span></td>',
+      '<td style="padding:6px 8px;font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(entry.target || '') + '">' + escHtml(entry.target || '') + '</td>',
+      '<td style="padding:6px 8px;font-size:12px;white-space:nowrap">' + escHtml(entry.moderator || '') + '</td>',
+      '<td style="padding:6px 8px;font-size:12px;color:var(--text-secondary)">' + escHtml(entry.reason || '\u2014') + '</td>',
+      '<td style="padding:6px 8px;font-size:12px;color:var(--text-muted)">' + escHtml(entry.extra || '') + '</td>',
+    ];
+    tr.innerHTML = cells.join('');
+    tbody.appendChild(tr);
+  }
+}
+
+function escHtml(str) {
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Giveaways
+   ══════════════════════════════════════════════════════════════════════════ */
+
+let _giveawaySettings = {};
+
+function renderGiveawaySettings() {
+  // Populate default channel dropdown
+  const sel = document.getElementById('giveaway-default-channel');
+  if (!sel) return;
+  const prev = sel.value;
+  while (sel.options.length > 1) sel.remove(1);
+  for (const ch of (window._channels || [])) {
+    const opt = new Option('#' + ch.name + ' (' + ch.guild + ')', ch.id);
+    sel.add(opt);
+  }
+  const defCid = String(_giveawaySettings.default_channel_id || '');
+  sel.value = defCid;
+  const rolesEl = document.getElementById('giveaway-manager-roles');
+  if (rolesEl) rolesEl.value = (_giveawaySettings.manager_role_ids || []).join(' ');
+}
+
+async function loadGiveaways() {
+  const data = await api('GET', '/api/giveaways');
+  if (!data) return;
+  _giveawaySettings = data.settings || {};
+  renderGiveawaySettings();
+  const now = Date.now() / 1000;
+  const active = (data.giveaways || []).filter(g => !g.ended);
+  const ended = (data.giveaways || []).filter(g => g.ended);
+
+  const activeCountEl = document.getElementById('giveaway-active-count');
+  if (activeCountEl) activeCountEl.textContent = active.length + ' active';
+
+  document.getElementById('giveaway-active-list').innerHTML =
+    active.length ? active.map(g => giveawayCard(g, false, now)).join('') :
+    '<p style="color:var(--text-muted);font-size:14px">No active giveaways.</p>';
+
+  document.getElementById('giveaway-ended-list').innerHTML =
+    ended.length ? ended.map(g => giveawayCard(g, true, now)).join('') :
+    '<p style="color:var(--text-muted);font-size:14px">No ended giveaways.</p>';
+}
+
+function giveawayCard(g, ended, now) {
+  const remaining = Math.max(0, g.end_time - now);
+  const endDate = new Date(g.end_time * 1000).toLocaleString();
+  const entries = (g.entries || []).length;
+  const excluded = g.excluded_entries || [];
+  const mid = escHtml(String(g.message_id));
+  const msgUrl = 'https://discord.com/channels/' + g.guild_id + '/' + g.channel_id + '/' + g.message_id;
+  const badge = ended
+    ? '<span style="background:var(--bg-light);color:var(--text-muted);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">ENDED</span>'
+    : '<span style="background:var(--accent);color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">ACTIVE</span>';
+  const timeStr = ended ? 'Ended: ' + endDate : 'Ends in: <b>' + fmtDuration(remaining) + '</b> (' + endDate + ')';
+  const actionBtns = ended
+    ? '<button class="btn btn-sm" style="background:var(--accent)" data-ga-fn="reroll" data-ga-id="' + mid + '">Reroll</button> '
+      + '<button class="btn btn-sm btn-danger" data-ga-fn="delete" data-ga-id="' + mid + '">Delete</button>'
+    : '<button class="btn btn-sm btn-danger" data-ga-fn="end" data-ga-id="' + mid + '">Force End</button> '
+      + '<button class="btn btn-sm btn-danger" style="margin-left:4px" data-ga-fn="delete" data-ga-id="' + mid + '">Delete</button>';
+
+  /* Participants section — only shown in active giveaways */
+  let participantsHtml = '';
+  if (!ended) {
+    const allEntries = g.entries || [];
+    const eligibleCount = allEntries.filter(function(uid) { return excluded.indexOf(uid) === -1; }).length;
+    const detailsId = 'ga-participants-' + mid;
+    if (allEntries.length === 0) {
+      participantsHtml = '<div style="margin-top:10px;font-size:12px;color:var(--text-muted)">No participants yet.</div>';
+    } else {
+      const rows = allEntries.map(function(uid) {
+        const isExcluded = excluded.indexOf(uid) !== -1;
+        const icon = isExcluded ? '&#128683;' : '&#9989;';
+        const style = isExcluded
+          ? 'text-decoration:line-through;color:var(--text-muted);opacity:.6'
+          : 'color:var(--text-primary)';
+        return '<div style="display:flex;align-items:center;gap:8px;padding:3px 0;border-bottom:1px solid var(--bg-light)">'
+          + '<span style="' + style + ';font-size:13px;font-family:monospace;flex:1">&lt;@' + uid + '&gt;</span>'
+          + '<button class="btn btn-sm" style="padding:1px 6px;font-size:13px;background:transparent;border:none;cursor:pointer" '
+          + 'title="' + (isExcluded ? 'Re-include' : 'Exclude') + '" '
+          + 'data-ga-fn="toggleExclude" data-ga-id="' + mid + '" data-ga-uid="' + uid + '">'
+          + icon + '</button>'
+          + '</div>';
+      }).join('');
+      participantsHtml = '<details id="' + detailsId + '" style="margin-top:10px">'
+        + '<summary style="cursor:pointer;font-size:12px;color:var(--accent);user-select:none">'
+        + '&#128101; Participants (' + allEntries.length + ' entered, '
+        + eligibleCount + ' eligible)</summary>'
+        + '<div style="margin-top:8px;max-height:220px;overflow-y:auto;padding:0 4px">'
+        + rows
+        + '</div></details>';
+    }
+  }
+
+  return '<div style="background:var(--bg-dark);border-radius:8px;padding:16px;margin-bottom:12px">'
+    + '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;flex-wrap:wrap">'
+    + '<div><span style="font-weight:600;font-size:15px">&#127881; ' + escHtml(g.prize) + '</span>&nbsp;&nbsp;' + badge + '</div>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap">' + actionBtns
+    + ' <a href="' + escHtml(msgUrl) + '" target="_blank" style="font-size:12px;color:var(--accent);white-space:nowrap;align-self:center">&#x2197; View</a></div></div>'
+    + '<div style="margin-top:8px;font-size:13px;color:var(--text-secondary)">'
+    + timeStr + ' &nbsp;|&nbsp; ' + entries + ' ' + (entries === 1 ? 'entry' : 'entries')
+    + ' &nbsp;|&nbsp; Winners: ' + g.winner_count
+    + (ended && g.winners && g.winners.length ? ' &nbsp;|&nbsp; Drawn: <code>' + escHtml(g.winners.map(function(w){return '<@'+w+'>';}).join(', ')) + '</code>' : '')
+    + '</div>'
+    + (g.announcement_message ? '<div style="margin-top:8px;font-size:12px;color:var(--text-muted);background:var(--bg-medium);border-radius:4px;padding:6px 10px"><b>Announcement:</b> ' + escHtml(g.announcement_message) + '</div>' : '')
+    + participantsHtml
+    + '</div>';
+}
+
+function fmtDuration(secs) {
+  secs = Math.max(0, Math.floor(secs));
+  if (secs < 60) return secs + 's';
+  if (secs < 3600) { const m = Math.floor(secs/60), s = secs%60; return m + 'm ' + s + 's'; }
+  if (secs < 86400) { const h = Math.floor(secs/3600), m = Math.floor((secs%3600)/60); return h + 'h ' + m + 'm'; }
+  const d = Math.floor(secs/86400), h = Math.floor((secs%86400)/3600); return d + 'd ' + h + 'h';
+}
+
+async function saveGiveawaySettings() {
+  const chanId = document.getElementById('giveaway-default-channel').value || null;
+  const roleRaw = document.getElementById('giveaway-manager-roles').value.trim();
+  const roleIds = roleRaw ? roleRaw.split(/\s+/).filter(Boolean) : [];
+  const r = await api('PUT', '/api/giveaway-settings', {
+    default_channel_id: chanId || null,
+    manager_role_ids: roleIds,
+  });
+  if (r) { toast('Giveaway settings saved'); await loadGiveaways(); }
+}
+
+async function giveawayToggleExclude(msgId, userId) {
+  const r = await api('POST', '/api/giveaways/' + msgId + '/toggle-exclude/' + userId, {});
+  if (r) { await loadGiveaways(); }
+}
+
+async function giveawayForceEnd(msgId) {
+  if (!confirm('End this giveaway now and pick winners?')) return;
+  const r = await api('POST', '/api/giveaways/' + msgId + '/end', {});
+  if (r) { toast('Giveaway ended'); await loadGiveaways(); }
+}
+
+async function giveawayReroll(msgId) {
+  if (!confirm('Pick a new winner for this ended giveaway?')) return;
+  const r = await api('POST', '/api/giveaways/' + msgId + '/reroll', {});
+  if (r) { toast('Rerolled!'); await loadGiveaways(); }
+}
+
+async function giveawayDelete(msgId) {
+  if (!confirm('Delete this giveaway record and its Discord message?')) return;
+  const r = await api('DELETE', '/api/giveaways/' + msgId);
+  if (r) { toast('Giveaway deleted'); await loadGiveaways(); }
+}
+
+/* Delegated click handler for giveaway action buttons */
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('[data-ga-fn]');
+  if (!btn) return;
+  const fn = btn.dataset.gaFn, mid = btn.dataset.gaId;
+  if (!mid) return;
+  if (fn === 'end') giveawayForceEnd(mid);
+  else if (fn === 'reroll') giveawayReroll(mid);
+  else if (fn === 'delete') giveawayDelete(mid);
+  else if (fn === 'toggleExclude') {
+    const uid = btn.dataset.gaUid;
+    if (uid) giveawayToggleExclude(mid, uid);
+  }
+});
+
 </script>
 </body>
 </html>"""

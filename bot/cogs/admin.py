@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 import discord
 from discord import app_commands
 
+from bot.main import _surface_links
+
 if TYPE_CHECKING:
     from bot.main import CyBot
 
@@ -74,12 +76,6 @@ class AdminCog(discord.ext.commands.Cog):
                 )
                 return
 
-        if channel.id not in self.bot.cfg.active_channels:
-            await interaction.response.send_message(
-                f"{channel.mention} is not an active channel. Add it first.",
-                ephemeral=True,
-            )
-            return
         if not self.bot.cfg.channel_permissions.get(str(channel.id), {}).get("can_post", True):
             await interaction.response.send_message(
                 f"Posting is disabled for {channel.mention}. Enable it in the Channels panel.",
@@ -187,19 +183,16 @@ class AdminCog(discord.ext.commands.Cog):
     ):
         if await self._deny(interaction):
             return
-        if channel.id not in self.bot.cfg.active_channels:
-            await interaction.response.send_message(
-                f"{channel.mention} is not an active channel. Add it first.",
-                ephemeral=True,
-            )
-            return
         if not self.bot.cfg.bot_enabled:
             await interaction.response.send_message(
                 "Bot is currently disabled. Use `/cy enable` to re-enable.",
                 ephemeral=True,
             )
             return
-        msg = await self.bot.webhooks.send_as_cy(channel, message)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        # Surface links at the end so Discord embeds them cleanly without duplication
+        formatted_message = _surface_links(message)
+        msg = await self.bot.webhooks.send_as_cy(channel, formatted_message)
         log.info("say_raw: channel_id=%s message_id=%s", channel.id, msg.id)
         em = discord.Embed(title="\U0001f4ac Raw Message Sent", color=discord.Color.blue())
         em.timestamp = discord.utils.utcnow()
@@ -208,7 +201,7 @@ class AdminCog(discord.ext.commands.Cog):
         em.add_field(name="Message", value=message[:500], inline=False)
         em.add_field(name="Jump", value=msg.jump_url, inline=False)
         await self.bot.log_to_channel(em)
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Sent to {channel.mention}: {msg.jump_url}", ephemeral=True
         )
 

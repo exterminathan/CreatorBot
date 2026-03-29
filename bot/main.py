@@ -100,12 +100,15 @@ def _surface_links(text: str, extra_links: list[str] | None = None) -> str:
 
 
 # ── Web server (health check + admin UI) ────────────────────────────────────
-def _start_web_server(cfg: Config, persona: Persona):
+def _start_web_server(cfg: Config, persona: Persona, bot_ref: list | None = None):
     """Run the web server on $PORT for Cloud Run health check + admin UI."""
     from bot.web import create_app
 
     port = int(os.environ.get("PORT", 8080))
     app = create_app(cfg, persona)
+    # Store mutable ref so we can inject bot after it's ready
+    if bot_ref is not None:
+        bot_ref.append(app["bot_holder"])  # store the dict so on_ready can set ["bot"] without touching app state
     runner = web.AppRunner(app)
     loop = asyncio.new_event_loop()
     loop.run_until_complete(runner.setup())
@@ -118,9 +121,10 @@ def _start_web_server(cfg: Config, persona: Persona):
 class CyBot(commands.Bot):
     """The CyBot Discord bot."""
 
-    def __init__(self, cfg: Config, persona: Persona):
+    def __init__(self, cfg: Config, persona: Persona, web_app_ref: list | None = None):
         intents = discord.Intents.default()
         intents.message_content = True
+        intents.members = True  # required for on_member_join (enable in Developer Portal)
         super().__init__(command_prefix="!", intents=intents)
 
         self.cfg = cfg
@@ -130,12 +134,16 @@ class CyBot(commands.Bot):
             api_key=cfg.gemini_api_key,
             model_name=cfg.gemini_model,
         )
+        self._web_app_ref = web_app_ref or []
         # Rate-limit tracking for interaction replies: user_id -> last reply timestamp
         self._interaction_cooldowns: dict[int, float] = {}
         self.cfg._interaction_cooldowns = self._interaction_cooldowns
 
     async def setup_hook(self):
         await self.load_extension("bot.cogs.admin")
+        await self.load_extension("bot.cogs.moderation")
+        await self.load_extension("bot.cogs.giveaway")
+        await self.load_extension("bot.cogs.forms")
 
     async def on_ready(self):
         log.info("Logged in as %s (ID: %s)", self.user, self.user.id)
@@ -152,6 +160,14 @@ class CyBot(commands.Bot):
         # Populate channel/role info for web API
         self._populate_guild_info()
         await self._populate_user_names()
+        # Resume any active giveaways
+        giveaway_cog = self.cogs.get("GiveawayCog")
+        if giveaway_cog:
+            await giveaway_cog.manager.resume_all()
+        # Inject bot reference into web app for giveaway API routes
+        if self._web_app_ref:
+            self._web_app_ref[0]["bot"] = self
+            log.info("Bot reference injected into web app")
 
     def _populate_guild_info(self):
         """Store channel/role info from all guilds for the web API."""
@@ -487,13 +503,18 @@ def main():
     if cfg.persona_data:
         persona.apply_overrides(cfg.persona_data)
 
+    # Use a list as a mutable container to receive the aiohttp app reference
+    # from the web thread, so we can inject the bot into it after startup.
+    web_app_ref: list = []
+
     # Start web server in a daemon thread for Cloud Run
     web_thread = threading.Thread(
-        target=_start_web_server, args=(cfg, persona), daemon=True
+        target=_start_web_server, args=(cfg, persona, web_app_ref), daemon=True
     )
     web_thread.start()
 
-    bot = CyBot(cfg, persona)
+    bot = CyBot(cfg, persona, web_app_ref)
+
     bot.run(cfg.bot_token, log_handler=None)
 
 

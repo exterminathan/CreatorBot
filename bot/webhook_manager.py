@@ -23,19 +23,35 @@ class WebhookManager:
         self._cache: dict[int, discord.Webhook] = {}
 
     async def get_or_create(self, channel: discord.TextChannel) -> discord.Webhook:
-        """Return an existing CyBot webhook for the channel, or create one."""
+        """Return an existing CyBot webhook for the channel, or create one.
+
+        Handles the race condition where a webhook may be deleted between the
+        cache check and first use, or where two concurrent callers would both
+        try to create a new webhook at the same time.
+        """
         if channel.id in self._cache:
             return self._cache[channel.id]
 
-        # Check if we already have a webhook in this channel
+        # Check existing webhooks on Discord before creating a new one
         webhooks = await channel.webhooks()
         for wh in webhooks:
             if wh.name == WEBHOOK_NAME:
                 self._cache[channel.id] = wh
                 return wh
 
-        # Create a new one
-        wh = await channel.create_webhook(name=WEBHOOK_NAME)
+        # Create a new webhook; if another process beat us to it, fall back
+        # to re-fetching rather than propagating a duplicate-creation error.
+        try:
+            wh = await channel.create_webhook(name=WEBHOOK_NAME)
+        except discord.HTTPException:
+            # Re-fetch in case a concurrent call already created it
+            webhooks = await channel.webhooks()
+            for wh in webhooks:
+                if wh.name == WEBHOOK_NAME:
+                    self._cache[channel.id] = wh
+                    log.info("Webhook already existed in #%s (%s), using it", channel.name, channel.id)
+                    return wh
+            raise  # Re-raise if still not found (genuine permission error etc.)
         self._cache[channel.id] = wh
         log.info("Created webhook in #%s (%s)", channel.name, channel.id)
         return wh

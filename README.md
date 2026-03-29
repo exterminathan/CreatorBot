@@ -34,7 +34,16 @@ Edit `data/cy_persona.json` with Cy's personality details.
 
 Drop transcript `.txt` files into `data/transcripts/` — they'll be loaded into the system prompt automatically.
 
-### 5. Run
+### 5. Run tests (optional but recommended)
+
+```bash
+pip install pytest pytest-asyncio
+pytest tests/ -v
+```
+
+All 133 tests run fully offline (no Discord or Gemini API needed).
+
+### 6. Run
 
 ```bash
 pip install -r requirements.txt
@@ -45,14 +54,13 @@ python -m bot.main
 
 All commands are restricted to the configured admin user in the admin channel.
 
-| Command | Description |
-|---|---|
-| `/cy channel_add #channel` | Add a channel for Cy to post in |
-| `/cy channel_remove #channel` | Remove a channel |
-| `/cy channel_list` | List active channels |
-| `/cy send #channel <prompt>` | Generate and post a message as Cy |
-| `/cy prompt <text>` | Preview a generated response (admin only) |
-| `/cy persona_reload` | Reload persona data from disk |
+| Command                           | Description                                     |
+| --------------------------------- | ----------------------------------------------- |
+| `/cy newpost [#channel] <prompt>` | Generate an AI message and post it as Cy        |
+| `/cy preview_post <prompt>`       | Preview a generated response without posting    |
+| `/cy say_raw #channel <message>`  | Post a raw message as Cy (no AI)                |
+| `/cy disable`                     | Kill switch: stop all bot responses immediately |
+| `/cy enable`                      | Re-enable bot responses after kill switch       |
 
 ## Deploy to Cloud Run
 
