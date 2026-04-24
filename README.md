@@ -5,13 +5,13 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 [![Last commit](https://img.shields.io/github/last-commit/exterminathan/CreatorBot)](https://github.com/exterminathan/CreatorBot/commits/main)
 
-Fork this, fill in two config files, and you have a Discord bot that **speaks as any persona** — messages appear to come from a regular user via webhooks, not a bot account. Powered by Google Gemini, deployed to Cloud Run, and manageable from a browser panel.
+Fork this, fill in two config files, and you have a Discord bot that **speaks as any persona** — messages appear to come from a regular user via webhooks, not a bot account. Powered by Google Gemini, deployed to Cloud Run, and fully manageable from a browser panel.
 
 ---
 
 ## Table of Contents
 
-- [Demo](#demo)
+- [Feature Tour](#feature-tour)
 - [Features](#features)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
@@ -28,11 +28,41 @@ Fork this, fill in two config files, and you have a Discord bot that **speaks as
 
 ---
 
-## Demo
+## Feature Tour
 
-<!-- Add a screenshot or GIF of the bot posting in Discord here -->
-<!-- Suggested: screenshot of a webhook message in chat alongside the /bot newpost command -->
-![Bot posting a message in Discord](docs/demo.png)
+Everything below is managed from the password-protected web panel at `/admin` — no config edits or bot restarts needed after initial setup.
+
+### Persona Configuration
+
+![Persona configuration](docs/persona.png)
+
+Define who your bot is directly from the browser. Set the **display name**, **bio**, and **writing style** that shape every AI-generated message. Add specific **facts** (things the persona knows about itself or the world) and **vocabulary** words that color its speech without overriding the AI's natural output. The persona loads at startup and hot-reloads when saved.
+
+### Channel Matrix
+
+![Channel matrix](docs/channels.png)
+
+Assign a role to every channel from one table. Toggle **POST** to allow the bot to generate and send messages there, and **@CY** to enable mention-triggered replies. Designate exactly one channel each as the **default** post target, **bot log**, **mod log**, and **welcome** channel using the radio buttons. All changes take effect immediately.
+
+### Role Permissions
+
+![Role permissions](docs/permissions.png)
+
+Control who can do what with a per-role permission matrix. Grant or deny each role access to mention-triggered replies (**@CY**), bot post commands (**/CY**), moderation commands (**/MOD**), and audit log viewing (**VIEW LOGS**). The **COOLDOWN** column toggles per-user rate limiting for that role. The `@everyone` row is locked by default; all other roles can be freely configured or removed.
+
+### Giveaways
+
+![Giveaway management panel](docs/giveaway_page.png)
+
+Run giveaways from the panel or via slash commands. Set a duration, winner count, and prize — the bot posts a native Discord embed with a one-click **Enter** button for server members. Active giveaways display a live countdown, entry count, winner count, and eligibility status. Force-end early, reroll winners, or delete from the panel at any time. Manager role IDs can be configured so non-admins can run giveaways.
+
+![Giveaway embed in Discord](docs/giveaway_in_discord.png)
+
+### Moderation Log
+
+![Recent moderation actions](docs/moderation.png)
+
+The panel keeps a running audit log of the last 200 moderation actions performed via slash commands — kicks, bans, timeouts, and purges — with timestamp, action type, target, moderator, reason, and full details. Refreshes on demand without leaving the browser.
 
 ---
 
@@ -43,16 +73,16 @@ Fork this, fill in two config files, and you have a Discord bot that **speaks as
 - Preview responses before sending with `/bot preview_post` (ephemeral, no webhook post)
 - Post raw messages as the persona with `/bot say_raw` (bypasses AI entirely)
 - `@mention` replies with per-user rate limiting
+- Persona fully editable from the web panel: display name, bio, writing style, facts, vocabulary
 
 **Community**
-- Giveaways (`/giveaway start`, auto-end, reroll, winner selection)
-- Forms — user-submitted modals, configurable via web UI (`/form list`, `/form submit`)
-- Moderation commands: kick, ban, timeout, unban, purge, welcome messages
+- Giveaways — timed with automatic winner selection, native Discord Enter-button embeds, reroll support
+- Forms — user-submitted modals, configurable and manageable via web panel
+- Moderation commands: kick, ban, timeout, unban, purge — with in-panel audit log
 
 **Infrastructure**
-- Full web admin panel — browser UI, password-protected, accessible at `/admin`
+- Password-protected web admin panel at `/admin` — channel matrix, role permissions, giveaways, mod log, persona
 - Kill switch (`/bot disable`) to immediately stop all public responses
-- Role-based permissions, channel exclusion lists, and a custom slang dictionary
 - GCS-backed persistent state (optional — falls back to local disk automatically)
 - Structured logs on Cloud Run, plain-text logs locally
 
@@ -122,7 +152,7 @@ Also enable **Message Content Intent** and **Server Members Intent** under Bot �
 
 ## Configuring Your Persona
 
-Edit `data/persona.json` to define who the bot is — their bio, writing style, vocabulary, known facts, and example messages. The AI uses this to stay in character.
+Edit `data/persona.json` to define who the bot is — or configure it live from the `/admin` panel after deployment.
 
 ```json
 {
@@ -178,7 +208,7 @@ The root group name is configurable via `COMMAND_GROUP_NAME` in `config.py` (def
 
 ## Web Admin Panel
 
-The bot runs a password-protected browser UI at `/admin` (port 8080 locally; same path on the Cloud Run service URL in production). From the panel you can manage active channels, configure forms, adjust permissions, and monitor bot state — no command line needed after initial setup.
+The bot runs a password-protected browser UI at `/admin` (port 8080 locally; same path on the Cloud Run service URL in production). The panel covers everything in the [Feature Tour](#feature-tour) above — channel configuration, role permissions, persona editing, giveaway management, and the moderation audit log.
 
 ---
 
