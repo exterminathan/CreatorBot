@@ -8,7 +8,11 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-PERSONA_PATH = DATA_DIR / "cy_persona.json"
+
+# Filename of the committed persona template. User's private override lives in
+# `persona.local.json` (gitignored) and takes priority when present.
+DEFAULT_PERSONA_FILENAME = "persona.json"
+LOCAL_PERSONA_FILENAME = "persona.local.json"
 
 DEFAULT_TEMPLATE = (
     "You are {name}. You must write EXACTLY like {name} — "
@@ -28,12 +32,20 @@ DEFAULT_TEMPLATE = (
 )
 
 
-class Persona:
-    """Loads Cy's persona definition and builds a system prompt string
-    for the LLM."""
+def _resolve_persona_path(filename: str = DEFAULT_PERSONA_FILENAME) -> Path:
+    """Return the path to the persona file, preferring local override if present."""
+    local = DATA_DIR / LOCAL_PERSONA_FILENAME
+    if local.exists():
+        return local
+    return DATA_DIR / filename
 
-    def __init__(self):
-        self.name: str = "Cy"
+
+class Persona:
+    """Loads persona definition and builds a system prompt string for the LLM."""
+
+    def __init__(self, filename: str = DEFAULT_PERSONA_FILENAME):
+        self._filename = filename
+        self.name: str = "YourBot"
         self.bio: str = ""
         self.writing_style: str = ""
         self.vocabulary: list[str] = []
@@ -53,10 +65,11 @@ class Persona:
         )
 
     def _load_persona_json(self):
-        if not PERSONA_PATH.exists():
-            log.warning("Persona file not found at %s — using defaults", PERSONA_PATH)
+        path = _resolve_persona_path(self._filename)
+        if not path.exists():
+            log.warning("Persona file not found at %s — using defaults", path)
             return
-        with open(PERSONA_PATH, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         self.name = data.get("name", self.name)
         self.bio = data.get("bio", "")

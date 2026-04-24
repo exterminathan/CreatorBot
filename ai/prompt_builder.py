@@ -84,7 +84,7 @@ def build_interaction_messages(
     slang_dict: dict | None = None,
     template: str = "",
 ) -> list[dict[str, str]]:
-    """Build messages for a user-initiated @Cy interaction reply."""
+    """Build messages for a user-initiated @mention interaction reply."""
     system = persona.render_system_prompt(template)
     system += (
         "\n\nYou are replying to a Discord user who tagged you. "

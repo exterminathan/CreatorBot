@@ -8,7 +8,18 @@ load_dotenv()
 
 log = logging.getLogger(__name__)
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+# Import static per-deployment config from top-level config.py.
+# Falls back to config.example.py so tests and fresh clones still load.
+try:
+    import config as _user_config
+except ImportError:
+    import importlib.util
+    _example_path = Path(__file__).resolve().parent.parent / "config.example.py"
+    _spec = importlib.util.spec_from_file_location("_creatorbot_config_example", _example_path)
+    _user_config = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_user_config)  # type: ignore[union-attr]
+
+DATA_DIR = Path(_user_config.DATA_DIR)
 CONFIG_PATH = DATA_DIR / "config.json"
 GCS_OBJECT = "config.json"
 
@@ -24,19 +35,33 @@ def _require_env(key: str) -> str:
     return val
 
 
+def _int_env_or(key: str, fallback: int) -> int:
+    """Read an int from env if set (for test/CI overrides), else use config.py value."""
+    val = os.environ.get(key)
+    if val:
+        return int(val)
+    return int(fallback)
+
+
 class Config:
-    """Loads env vars and manages persistent bot state (active channels)."""
+    """Loads secrets + static config and manages persistent bot state."""
 
     def __init__(self):
+        # Secrets (from .env / environment) — never in config.py
         self.bot_token: str = _require_env("DISCORD_BOT_TOKEN")
-        self.admin_channel_id: int = int(_require_env("ADMIN_CHANNEL_ID"))
-        self.admin_user_id: int = int(_require_env("ADMIN_USER_ID"))
         self.gemini_api_key: str = _require_env("GEMINI_API_KEY")
-        self.gemini_model: str = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
-        self.cy_display_name: str = os.environ.get("CY_DISPLAY_NAME", "Cy")
-        self.cy_avatar_url: str | None = os.environ.get("CY_AVATAR_URL") or None
-        self._config_bucket: str | None = os.environ.get("CONFIG_BUCKET")
-        self.web_password: str = os.environ.get("WEB_PASSWORD", "")
+        self.web_password: str = os.environ.get("WEB_PASSWORD", "") or _user_config.WEB_PASSWORD
+
+        # Static per-deployment config (from config.py; env overrides for tests/CI)
+        self.admin_channel_id: int = _int_env_or("ADMIN_CHANNEL_ID", _user_config.ADMIN_CHANNEL_ID)
+        self.admin_user_id: int = _int_env_or("ADMIN_USER_ID", _user_config.ADMIN_USER_ID)
+        self.gemini_model: str = os.environ.get("GEMINI_MODEL") or _user_config.GEMINI_MODEL
+        self.bot_display_name: str = _user_config.BOT_DISPLAY_NAME
+        self.bot_avatar_url: str | None = _user_config.BOT_AVATAR_URL
+        self.command_group_name: str = _user_config.COMMAND_GROUP_NAME
+        self.webhook_name: str = _user_config.WEBHOOK_NAME
+        self.persona_file: str = _user_config.PERSONA_FILE
+        self._config_bucket: str | None = os.environ.get("CONFIG_BUCKET") or _user_config.CONFIG_BUCKET
 
         # Persistent state
         self.active_channels: list[int] = []

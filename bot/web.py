@@ -1,4 +1,4 @@
-"""CyBot web admin interface — served alongside the Cloud Run health check."""
+"""Web admin interface — served alongside the Cloud Run health check."""
 from __future__ import annotations
 
 import functools
@@ -42,14 +42,14 @@ async def health(request: web.Request) -> web.Response:
 async def avatar(request: web.Request) -> web.Response:
     """Serve the bot's avatar image so Discord webhooks can use an https URL."""
     cfg = request.app["config"]
-    # cy_avatar_url may hold a local file path during local dev
-    file_hint = cfg.cy_avatar_url or ""
+    # bot_avatar_url may hold a local file path during local dev
+    file_hint = cfg.bot_avatar_url or ""
     # If it looks like a local path (no scheme), resolve relative to data dir
     if file_hint and "://" not in file_hint:
         path = (_DATA_DIR / file_hint).resolve()
     else:
-        # Fall back to scanning data dir for any image named cyNewPfp.*
-        candidates = sorted(_DATA_DIR.glob("cyNewPfp.*"))
+        # Fall back to scanning data dir for any image named avatar.*
+        candidates = sorted(_DATA_DIR.glob("avatar.*"))
         path = candidates[0] if candidates else None
     if not path or not path.exists():
         raise web.HTTPNotFound()
@@ -457,7 +457,7 @@ _LOGIN_SHELL_HTML = """\
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CyBot</title>
+<title>Bot Admin</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:#1e1f22;--card:#2b2d31;--text:#f2f3f5;--sub:#b5bac1;--accent:#5865f2;--accent-hover:#4752c4;--red:#da373c;--border:#3f4147;--input:#1e1f22;--font:'Segoe UI','Noto Sans','Helvetica Neue',Arial,sans-serif}
@@ -475,7 +475,7 @@ input:focus{border-color:var(--accent)}
 </head>
 <body>
 <div class="card">
-  <h1>CyBot</h1>
+  <h1>Bot Admin</h1>
   <p class="sub">Control Panel</p>
   <input type="password" id="pw" placeholder="Password" autocomplete="off">
   <div class="err" id="err"></div>
@@ -496,7 +496,7 @@ async function doLogin() {
     });
     if (!r.ok) { err.textContent = 'Invalid password'; return; }
     const {token} = await r.json();
-    sessionStorage.setItem('cybot_token', token);
+    sessionStorage.setItem('creatorbot_token', token);
     document.getElementById('loading').style.display = 'block';
     const ui = await fetch('/api/ui', {headers: {'Authorization': 'Bearer ' + token}});
     if (!ui.ok) { err.textContent = 'Failed to load UI'; return; }
@@ -514,7 +514,7 @@ _ADMIN_INNER_HTML = """\
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CyBot Control Panel</title>
+<title>Bot Control Panel</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -658,7 +658,7 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
   <div class="layout">
     <!-- Sidebar -->
     <nav class="sidebar">
-      <div class="sidebar-title">CyBot Settings</div>
+      <div class="sidebar-title">Bot Settings</div>
       <div class="sidebar-item active" data-section="general" onclick="showSection('general')">General</div>
       <div class="sidebar-item" data-section="admins" onclick="showSection('admins')">Admin Users</div>
       <div class="sidebar-item" data-section="channels" onclick="showSection('channels')">Channels</div>
@@ -715,7 +715,7 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
       <!-- ── Channels ── -->
       <div id="section-channels" class="section">
         <h2 class="section-title">Channels</h2>
-        <p class="section-desc">Add channels Cy has access to, then use the matrix to control exactly what each one can do.</p>
+        <p class="section-desc">Add channels the bot has access to, then use the matrix to control exactly what each one can do.</p>
         <div class="add-row" style="margin-bottom:20px">
           <select id="add-channel-select" class="form-input"><option value="">&#8212; Select a channel to add &#8212;</option></select>
           <button class="btn btn-primary" onclick="addChannel()">Add Channel</button>
@@ -731,7 +731,7 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
       <!-- ── Persona ── -->
       <div id="section-persona" class="section">
         <h2 class="section-title">Persona</h2>
-        <p class="section-desc">Define Cy's personality, writing style, and behavior for AI-generated messages.</p>
+        <p class="section-desc">Define the persona's personality, writing style, and behavior for AI-generated messages.</p>
         <div class="form-group">
           <label class="form-label">Display Name</label>
           <input type="text" class="form-input" id="persona-name">
@@ -747,16 +747,16 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
         <hr class="divider">
         <div class="form-group">
           <label class="form-label">Facts</label>
-          <p class="form-hint">Specific facts and knowledge about Cy that influence responses (e.g. "From LA", "Drives a Camaro")</p>
+          <p class="form-hint">Specific facts and knowledge about the persona that influence responses</p>
           <div class="tag-container" id="fact-tags"></div>
           <div class="add-row">
-            <input type="text" id="add-fact-input" placeholder="Add a fact about Cy">
+            <input type="text" id="add-fact-input" placeholder="Add a fact about the persona">
             <button class="btn btn-primary btn-sm" onclick="addFact()">Add</button>
           </div>
         </div>
         <div class="form-group">
           <label class="form-label">Vocabulary</label>
-          <p class="form-hint">Words and phrases that subtly color Cy's speech (used as flavor, not primary content)</p>
+          <p class="form-hint">Words and phrases that subtly color the persona's speech (used as flavor, not primary content)</p>
           <div class="tag-container" id="vocab-tags"></div>
           <div class="add-row">
             <input type="text" id="add-vocab-input" placeholder="Add word or phrase">
@@ -770,7 +770,7 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
       <!-- ── Video Lines ── -->
       <div id="section-video-lines" class="section">
         <h2 class="section-title">Video Lines</h2>
-        <p class="section-desc">Direct lines from Cy's videos. These teach the AI his authentic voice and speech patterns. Add as many as you like.</p>
+        <p class="section-desc">Direct lines from the persona's videos or past writing. These teach the AI an authentic voice and speech patterns. Add as many as you like.</p>
         <div id="video-line-list"></div>
         <button class="btn btn-primary btn-sm" onclick="addVideoLine()" style="margin-top:12px">+ Add Line</button>
         <hr class="divider">
@@ -780,7 +780,7 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
       <!-- ── Example Messages ── -->
       <div id="section-messages" class="section">
         <h2 class="section-title">Example Messages</h2>
-        <p class="section-desc">Examples that teach the AI how Cy writes. These are included in the system prompt.</p>
+        <p class="section-desc">Examples that teach the AI how the persona writes. These are included in the system prompt.</p>
         <div id="message-list"></div>
         <button class="btn btn-primary btn-sm" onclick="addMessage()" style="margin-top:12px">+ Add Message</button>
         <hr class="divider">
@@ -790,7 +790,7 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
       <!-- ── Exclusions ── -->
       <div id="section-exclusions" class="section">
         <h2 class="section-title">Exclusions</h2>
-        <p class="section-desc">Topics that Cy should avoid or block. Severity controls how strictly the topic is filtered. Changes save automatically.</p>
+        <p class="section-desc">Topics the bot should avoid or block. Severity controls how strictly the topic is filtered. Changes save automatically.</p>
         <p class="form-hint" style="margin-bottom:16px"><b>1</b> = Allowed (no filter) &nbsp; <b>2</b> = Restricted (no direct discussion, tangential OK) &nbsp; <b>3</b> = Blocked (never mention)</p>
         <div id="exclusion-list"></div>
         <div class="add-row">
@@ -807,7 +807,7 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
       <!-- ── Slang ── -->
       <div id="section-slang" class="section">
         <h2 class="section-title">Slang Dictionary</h2>
-        <p class="section-desc">Define slang terms so Cy understands and responds to them correctly. Injected into the system prompt as a glossary. Changes save automatically.</p>
+        <p class="section-desc">Define slang terms so the bot understands and responds to them correctly. Injected into the system prompt as a glossary. Changes save automatically.</p>
         <div id="slang-list"></div>
         <div class="add-row" style="margin-top:12px">
           <input type="text" id="add-slang-word" placeholder="Slang word or phrase" style="flex:0 0 180px">
@@ -819,7 +819,7 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
       <!-- ── Default Responses ── -->
       <div id="section-default-responses" class="section">
         <h2 class="section-title">Default Responses</h2>
-        <p class="section-desc">When AI generation fails, times out, or gets blocked, Cy will pick one of these at random. Changes save automatically.</p>
+        <p class="section-desc">When AI generation fails, times out, or gets blocked, the bot will pick one of these at random. Changes save automatically.</p>
         <div id="default-response-list"></div>
         <div class="add-row">
           <input type="text" id="add-default-response-input" placeholder="Add a fallback response">
@@ -856,7 +856,7 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
         </div>
         <div class="form-group">
           <label class="form-label">Interaction Additive Prompt</label>
-          <p class="form-hint">Extra instructions appended when replying to @Cy mentions</p>
+          <p class="form-hint">Extra instructions appended when replying to @mentions</p>
           <textarea class="form-textarea" id="interaction-additive-prompt" rows="4"></textarea>
         </div>
         <button class="btn btn-primary" onclick="saveAdditivePrompts()">Save Additive Prompts</button>
@@ -883,12 +883,12 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
       <!-- ── Interaction Settings ── -->
       <div id="section-interaction-settings" class="section">
         <h2 class="section-title">Interaction Settings</h2>
-        <p class="section-desc">Controls for the @Cy mention-reply pipeline. Members can tag Cy in a dedicated channel to get a response.</p>
+        <p class="section-desc">Controls for the @mention-reply pipeline. Members can tag the bot in a dedicated channel to get a response.</p>
         <div class="form-group">
           <label class="form-label">Enabled</label>
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
             <input type="checkbox" id="interaction-enabled" style="width:18px;height:18px">
-            <span style="font-size:14px;color:var(--text-secondary)">Allow @Cy interactions</span>
+            <span style="font-size:14px;color:var(--text-secondary)">Allow @mention interactions</span>
           </label>
         </div>
         <div class="form-group">
@@ -1008,21 +1008,21 @@ body{font-family:var(--font);background:var(--bg-mid);color:var(--text-primary);
 
 <script>
 /* ════════════════════════════════════════════════════════════════════════════
-   CyBot Admin — Client-side logic
+   Bot Admin — Client-side logic
    ════════════════════════════════════════════════════════════════════════════ */
-let token = sessionStorage.getItem('cybot_token');
+let token = sessionStorage.getItem('creatorbot_token');
 let config = {};
 let persona = {};
 let _everyoneLocked = true;
 
 const CHAN_PERMS = [
   {key: 'can_post', label: 'POST', title: 'Allow /cy newpost to target this channel'},
-  {key: 'can_interact', label: 'INTERACT', title: 'Allow @Cy interaction replies in this channel'},
+  {key: 'can_interact', label: 'INTERACT', title: 'Allow @mention interaction replies in this channel'},
 ];
 /* Matrix column definitions — toggle cols use channel_permissions, excl cols use top-level config fields */
 const MATRIX_COLS = [
   {type:'toggle', key:'can_post',    label:'Post',    title:'Allow /cy newpost to send here'},
-  {type:'toggle', key:'can_interact',label:'@Cy',     title:'Allow @Cy mention replies here'},
+  {type:'toggle', key:'can_interact',label:'@mention',     title:'Allow @mention replies here'},
   {type:'excl', field:'default_channel_id', label:'Default', title:'Default channel for /cy newpost (one channel only)'},
   {type:'excl', field:'log_channel_id',     label:'Bot Log', title:'Bot activity log destination (one channel only)'},
   {type:'excl', field:'mod_log_channel_id', label:'Mod Log', title:'Moderation action log destination (one channel only)'},
@@ -1047,7 +1047,7 @@ async function api(method, path, body) {
   };
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res = await fetch(path, opts);
-  if (res.status === 401) { sessionStorage.removeItem('cybot_token'); location.href = '/admin'; return null; }
+  if (res.status === 401) { sessionStorage.removeItem('creatorbot_token'); location.href = '/admin'; return null; }
   if (!res.ok) {
     const err = await res.json().catch(() => ({error:'Request failed'}));
     toast(err.error || 'Request failed', 'error');
@@ -1548,7 +1548,7 @@ async function saveAdditivePrompts() {
    ══════════════════════════════════════════════════════════════════════════ */
 const PERMS = [
   {key: 'bypass_cooldown', name: 'Bypass Cooldown', short: 'Cooldown', desc: 'Skip the rate limit between interactions'},
-  {key: 'can_interact', name: 'Can @Cy', short: '@Cy', desc: 'Allowed to mention and interact with Cy'},
+  {key: 'can_interact', name: 'Can @mention', short: '@mention', desc: 'Allowed to mention and interact with the bot'},
   {key: 'can_use_commands', name: 'Use /cy Commands', short: '/cy', desc: 'Access to admin slash commands (in admin channel)'},
   {key: 'can_moderate', name: 'Use /mod Commands', short: '/mod', desc: 'Access to all moderation commands (purge, kick, ban, timeout, unban) from any channel'},
   {key: 'can_view_logs', name: 'Can View Logs', short: 'View Logs', desc: 'Allowed to view the bot activity log channel (configure Discord channel perms accordingly)'},

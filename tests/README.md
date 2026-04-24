@@ -1,6 +1,6 @@
-# CyBot Test Suite
+# Test Suite
 
-Complete pytest test suite for CyBot. All tests run **fully offline** — no Discord connection, no Gemini API calls, no GCS bucket needed.
+Complete pytest test suite for CreatorBot. All tests run **fully offline** — no Discord connection, no Gemini API calls, no GCS bucket needed.
 
 ---
 

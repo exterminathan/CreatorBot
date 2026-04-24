@@ -1,7 +1,35 @@
 .env
 __pycache__/
 *.pyc
-data/config.json
-data/transcripts/*.txt
-data/transcripts/*.json
 .venv/
+.pytest_cache/
+
+# User-specific configuration (copy from *.example.* and fill in your values)
+/config.py
+
+# Runtime state (created/updated by the bot at runtime)
+/data/config.json
+
+# User's local persona override (takes priority over data/persona.json at runtime)
+/data/persona.local.json
+
+# User's private files (backups, images, notes, anything they don't want shipped)
+/data/local/
+/data/gcs_update.json
+/data/*.jpg
+/data/*.jpeg
+/data/*.png
+/data/*.gif
+/data/*.webp
+
+# Local-only docs / notes
+/CLAUDE.md
+/.github/copilot-instructions.md
+/cybot-feature-brief.html
+/bucket_hierarchy.txt
+/.claude/
+/RENAME_AND_PUBLISH.md
+
+# Local backup data (keep scripts under backups/scripts/ tracked)
+/backups/firestore/
+/backups/gcs/

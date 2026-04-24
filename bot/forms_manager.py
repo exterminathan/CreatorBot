@@ -1,4 +1,4 @@
-"""Forms system for CyBot.
+"""Forms system.
 
 Forms are created and configured via the web admin panel, then users
 interact with them via Discord slash commands (/form submit, /form list).

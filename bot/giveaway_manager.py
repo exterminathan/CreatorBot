@@ -1,4 +1,4 @@
-"""Giveaway system for CyBot.
+"""Giveaway system.
 
 Giveaways are posted as regular bot messages (not webhooks) so that
 Discord button interactions can be tracked back to the bot.

@@ -10,12 +10,10 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-WEBHOOK_NAME = "CyBot-Hook"
-
 
 class WebhookManager:
     """Creates, caches, and posts messages via channel webhooks so they appear
-    as a regular user (Cy's name + avatar)."""
+    as a regular user (the configured persona name + avatar)."""
 
     def __init__(self, config: Config):
         self.config = config
@@ -23,7 +21,7 @@ class WebhookManager:
         self._cache: dict[int, discord.Webhook] = {}
 
     async def get_or_create(self, channel: discord.TextChannel) -> discord.Webhook:
-        """Return an existing CyBot webhook for the channel, or create one.
+        """Return an existing webhook for the channel, or create one.
 
         Handles the race condition where a webhook may be deleted between the
         cache check and first use, or where two concurrent callers would both
@@ -32,22 +30,24 @@ class WebhookManager:
         if channel.id in self._cache:
             return self._cache[channel.id]
 
+        webhook_name = self.config.webhook_name
+
         # Check existing webhooks on Discord before creating a new one
         webhooks = await channel.webhooks()
         for wh in webhooks:
-            if wh.name == WEBHOOK_NAME:
+            if wh.name == webhook_name:
                 self._cache[channel.id] = wh
                 return wh
 
         # Create a new webhook; if another process beat us to it, fall back
         # to re-fetching rather than propagating a duplicate-creation error.
         try:
-            wh = await channel.create_webhook(name=WEBHOOK_NAME)
+            wh = await channel.create_webhook(name=webhook_name)
         except discord.HTTPException:
             # Re-fetch in case a concurrent call already created it
             webhooks = await channel.webhooks()
             for wh in webhooks:
-                if wh.name == WEBHOOK_NAME:
+                if wh.name == webhook_name:
                     self._cache[channel.id] = wh
                     log.info("Webhook already existed in #%s (%s), using it", channel.name, channel.id)
                     return wh
@@ -56,25 +56,26 @@ class WebhookManager:
         log.info("Created webhook in #%s (%s)", channel.name, channel.id)
         return wh
 
-    async def send_as_cy(self, channel: discord.TextChannel, content: str) -> discord.WebhookMessage:
-        """Post a message in *channel* that appears to come from Cy."""
+    async def send_as_persona(self, channel: discord.TextChannel, content: str) -> discord.WebhookMessage:
+        """Post a message in *channel* that appears to come from the configured persona."""
         wh = await self.get_or_create(channel)
         return await wh.send(
             content=content,
-            username=self.config.cy_display_name,
-            avatar_url=self.config.cy_avatar_url,
+            username=self.config.bot_display_name,
+            avatar_url=self.config.bot_avatar_url,
             wait=True,
         )
 
     async def cleanup(self, channel: discord.TextChannel):
-        """Delete the CyBot webhook from a channel."""
+        """Delete this bot's webhook from a channel."""
         if channel.id in self._cache:
             try:
                 await self._cache.pop(channel.id).delete()
             except discord.NotFound:
                 pass
         else:
+            webhook_name = self.config.webhook_name
             webhooks = await channel.webhooks()
             for wh in webhooks:
-                if wh.name == WEBHOOK_NAME:
+                if wh.name == webhook_name:
                     await wh.delete()

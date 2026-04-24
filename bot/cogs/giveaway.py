@@ -1,4 +1,4 @@
-"""Giveaway slash commands and button handler for CyBot."""
+"""Giveaway slash commands and button handler."""
 from __future__ import annotations
 
 import logging
@@ -17,7 +17,7 @@ from bot.giveaway_manager import (
 )
 
 if TYPE_CHECKING:
-    from bot.main import CyBot
+    from bot.main import CreatorBot
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ class GiveawayCog(discord.ext.commands.Cog):
         description="Manage server giveaways",
     )
 
-    def __init__(self, bot: CyBot):
+    def __init__(self, bot: CreatorBot):
         self.bot = bot
         self.manager = GiveawayManager(bot, bot.cfg)
 
@@ -231,7 +231,7 @@ class GiveawayCog(discord.ext.commands.Cog):
             entries = len(g.get("entries", []))
             lines.append(
                 f"• **{g['prize']}** — {_fmt_duration(remaining)} left, "
-                f"{entries} {"entry" if entries == 1 else "entries"}, "
+                f"{entries} {'entry' if entries == 1 else 'entries'}, "
                 f"{g['winner_count']} winner(s) — [Jump]({msg_url})"
             )
 
@@ -280,5 +280,5 @@ class GiveawayCog(discord.ext.commands.Cog):
             )
 
 
-async def setup(bot: CyBot):
+async def setup(bot: CreatorBot):
     await bot.add_cog(GiveawayCog(bot))

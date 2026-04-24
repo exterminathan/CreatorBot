@@ -11,7 +11,7 @@ import discord
 from discord import app_commands
 
 if TYPE_CHECKING:
-    from bot.main import CyBot
+    from bot.main import CreatorBot
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class ModerationCog(discord.ext.commands.Cog):
         description="Server moderation commands",
     )
 
-    def __init__(self, bot: CyBot):
+    def __init__(self, bot: CreatorBot):
         self.bot = bot
 
     # ── permission guards ────────────────────────────────────────────────────
@@ -434,5 +434,5 @@ class ModerationCog(discord.ext.commands.Cog):
         await interaction.followup.send(msg, ephemeral=True)
 
 
-async def setup(bot: CyBot) -> None:
+async def setup(bot: CreatorBot) -> None:
     await bot.add_cog(ModerationCog(bot))

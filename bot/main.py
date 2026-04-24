@@ -34,7 +34,7 @@ def _setup_logging() -> None:
 
 
 _setup_logging()
-log = logging.getLogger("cybot")
+log = logging.getLogger("creatorbot")
 
 GENERATION_TIMEOUT_SECONDS = 75
 
@@ -118,8 +118,8 @@ def _start_web_server(cfg: Config, persona: Persona, bot_ref: list | None = None
     loop.run_forever()
 
 
-class CyBot(commands.Bot):
-    """The CyBot Discord bot."""
+class CreatorBot(commands.Bot):
+    """Discord bot that posts AI-generated messages as a configurable persona."""
 
     def __init__(self, cfg: Config, persona: Persona, web_app_ref: list | None = None):
         intents = discord.Intents.default()
@@ -149,9 +149,9 @@ class CyBot(commands.Bot):
         log.info("Logged in as %s (ID: %s)", self.user, self.user.id)
         log.info("Active channels: %s", self.cfg.active_channels)
         # Use the bot's own avatar for webhook messages if no override is set
-        if self.cfg.cy_avatar_url is None and self.user.avatar:
-            self.cfg.cy_avatar_url = self.user.avatar.url
-            log.info("Using bot avatar for webhooks: %s", self.cfg.cy_avatar_url)
+        if self.cfg.bot_avatar_url is None and self.user.avatar:
+            self.cfg.bot_avatar_url = self.user.avatar.url
+            log.info("Using bot avatar for webhooks: %s", self.cfg.bot_avatar_url)
         # Sync slash commands to every guild for instant registration
         for guild in self.guilds:
             self.tree.copy_global_to(guild=guild)
@@ -277,7 +277,7 @@ class CyBot(commands.Bot):
         return self.cfg.default_permissions.get(perm, False)
 
     async def generate_post(self, prompt: str) -> str:
-        """Generate a post message as Cy from an admin prompt."""
+        """Generate a post message as the configured persona from an admin prompt."""
         prompt_links = _extract_urls(prompt)
         # Strip URLs from prompt so AI doesn't mangle them
         clean_prompt = _strip_urls(prompt) if prompt_links else prompt
@@ -311,7 +311,7 @@ class CyBot(commands.Bot):
         return _surface_links(text, extra_links=prompt_links)
 
     async def generate_interaction(self, user_message: str, user_name: str) -> str:
-        """Generate an interaction reply to a user's @Cy message."""
+        """Generate an interaction reply to a user's @mention message."""
         prompt_links = _extract_urls(user_message)
         clean_msg = _strip_urls(user_message) if prompt_links else user_message
         isettings = self.cfg.interaction_settings
@@ -368,7 +368,7 @@ class CyBot(commands.Bot):
             log.warning("Failed to send log to channel %s", self.cfg.log_channel_id)
 
     async def on_message(self, message: discord.Message):
-        """Handle @Cy mentions in the interaction channel."""
+        """Handle @mentions of this bot in configured interaction channels."""
         # Ignore own messages and bot messages
         if message.author.bot:
             return
@@ -442,7 +442,7 @@ class CyBot(commands.Bot):
             mention = f"<@{message.author.id}>"
             text = f"{mention} {text}"
             if str(message.channel.id) in {str(c) for c in self.cfg.active_channels}:
-                await self.webhooks.send_as_cy(message.channel, text)
+                await self.webhooks.send_as_persona(message.channel, text)
             else:
                 await message.reply(text, mention_author=False)
             return
@@ -479,10 +479,10 @@ class CyBot(commands.Bot):
         mention = f"<@{message.author.id}>"
         text = f"{mention} {text}"
 
-        # Post via webhook so it appears as Cy
+        # Post via webhook so it appears as the configured persona.
         # Compare as strings to avoid 64-bit Discord snowflake integer precision loss
         if str(message.channel.id) in {str(c) for c in self.cfg.active_channels}:
-            await self.webhooks.send_as_cy(message.channel, text)
+            await self.webhooks.send_as_persona(message.channel, text)
         else:
             await message.reply(text, mention_author=False)
 
@@ -515,7 +515,7 @@ def main():
     )
     web_thread.start()
 
-    bot = CyBot(cfg, persona, web_app_ref)
+    bot = CreatorBot(cfg, persona, web_app_ref)
 
     bot.run(cfg.bot_token, log_handler=None)
 

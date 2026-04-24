@@ -1,6 +1,6 @@
 """
-CyBot Test Configuration & Shared Fixtures
-===========================================
+Test Configuration & Shared Fixtures
+=====================================
 
 This file is loaded automatically by pytest before any tests run.
 It provides shared fixtures used across multiple test modules.
@@ -30,7 +30,7 @@ def minimal_persona() -> Persona:
     """Return a Persona where all fields are set to predictable test values.
 
     Bypasses disk I/O by building the object manually after construction so
-    the cy_persona.json file on disk is never loaded.
+    the persona file on disk is never loaded.
     """
     p = Persona.__new__(Persona)
     p.name = "TestBot"

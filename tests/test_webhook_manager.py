@@ -7,7 +7,7 @@ Covers:
     - get_or_create() fetches existing webhook from Discord
     - get_or_create() creates a new webhook when none exists
     - get_or_create() race-condition fallback (create fails → re-fetch)
-    - send_as_cy() delegates to webhook.send() with correct username/avatar
+    - send_as_persona() delegates to webhook.send() with correct username/avatar
     - cleanup() deletes cached webhook
 
 No real Discord connection is made — all discord objects are mocked.
@@ -19,11 +19,14 @@ Run:
 from __future__ import annotations
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import discord
 
-from bot.webhook_manager import WebhookManager, WEBHOOK_NAME
+from bot.webhook_manager import WebhookManager
+
+
+TEST_WEBHOOK_NAME = "TestBot-Hook"
 
 
 # ---------------------------------------------------------------------------
@@ -33,8 +36,9 @@ from bot.webhook_manager import WebhookManager, WEBHOOK_NAME
 @pytest.fixture()
 def mock_config() -> MagicMock:
     cfg = MagicMock()
-    cfg.cy_display_name = "Loler01"
-    cfg.cy_avatar_url = "https://example.com/avatar.png"
+    cfg.bot_display_name = "TestBot"
+    cfg.bot_avatar_url = "https://example.com/avatar.png"
+    cfg.webhook_name = TEST_WEBHOOK_NAME
     return cfg
 
 
@@ -53,12 +57,12 @@ def _make_channel(channel_id: int = 1, existing_webhooks: list | None = None) ->
     channel.webhooks = AsyncMock(return_value=existing)
 
     new_wh = MagicMock(spec=discord.Webhook)
-    new_wh.name = WEBHOOK_NAME
+    new_wh.name = TEST_WEBHOOK_NAME
     channel.create_webhook = AsyncMock(return_value=new_wh)
     return channel
 
 
-def _make_webhook(name: str = WEBHOOK_NAME, wh_id: int = 9001) -> MagicMock:
+def _make_webhook(name: str = TEST_WEBHOOK_NAME, wh_id: int = 9001) -> MagicMock:
     wh = MagicMock(spec=discord.Webhook)
     wh.name = name
     wh.id = wh_id
@@ -92,7 +96,7 @@ class TestGetOrCreateCache:
 class TestGetOrCreateExisting:
     @pytest.mark.asyncio
     async def test_finds_existing_webhook_by_name(self, manager):
-        existing_wh = _make_webhook(name=WEBHOOK_NAME)
+        existing_wh = _make_webhook(name=TEST_WEBHOOK_NAME)
         channel = _make_channel(channel_id=2, existing_webhooks=[existing_wh])
 
         result = await manager.get_or_create(channel)
@@ -108,11 +112,11 @@ class TestGetOrCreateExisting:
         result = await manager.get_or_create(channel)
 
         # Should have created a new one since the existing name doesn't match
-        channel.create_webhook.assert_called_once_with(name=WEBHOOK_NAME)
+        channel.create_webhook.assert_called_once_with(name=TEST_WEBHOOK_NAME)
 
     @pytest.mark.asyncio
     async def test_stores_found_webhook_in_cache(self, manager):
-        existing_wh = _make_webhook(name=WEBHOOK_NAME)
+        existing_wh = _make_webhook(name=TEST_WEBHOOK_NAME)
         channel = _make_channel(channel_id=4, existing_webhooks=[existing_wh])
 
         await manager.get_or_create(channel)
@@ -132,7 +136,7 @@ class TestGetOrCreateNew:
 
         result = await manager.get_or_create(channel)
 
-        channel.create_webhook.assert_called_once_with(name=WEBHOOK_NAME)
+        channel.create_webhook.assert_called_once_with(name=TEST_WEBHOOK_NAME)
         assert result is new_wh
 
     @pytest.mark.asyncio
@@ -153,7 +157,7 @@ class TestGetOrCreateRaceCondition:
     async def test_http_error_on_create_falls_back_to_refetch(self, manager):
         """If create_webhook raises HTTPException, manager should re-fetch webhooks
         and return the one that was already created by a concurrent call."""
-        race_wh = _make_webhook(name=WEBHOOK_NAME, wh_id=7777)
+        race_wh = _make_webhook(name=TEST_WEBHOOK_NAME, wh_id=7777)
         channel = _make_channel(channel_id=7, existing_webhooks=[])
 
         # First webhooks() call returns empty (no hook yet)
@@ -181,37 +185,37 @@ class TestGetOrCreateRaceCondition:
 
 
 # ---------------------------------------------------------------------------
-# send_as_cy
+# send_as_persona
 # ---------------------------------------------------------------------------
 
-class TestSendAsCy:
+class TestSendAsPersona:
     @pytest.mark.asyncio
     async def test_sends_with_correct_username(self, manager, mock_config):
         wh = _make_webhook()
         channel = _make_channel(channel_id=10, existing_webhooks=[wh])
 
-        await manager.send_as_cy(channel, "hello world")
+        await manager.send_as_persona(channel, "hello world")
 
         wh.send.assert_called_once()
         _, kwargs = wh.send.call_args
-        assert kwargs["username"] == mock_config.cy_display_name
+        assert kwargs["username"] == mock_config.bot_display_name
 
     @pytest.mark.asyncio
     async def test_sends_with_avatar_url(self, manager, mock_config):
         wh = _make_webhook()
         channel = _make_channel(channel_id=11, existing_webhooks=[wh])
 
-        await manager.send_as_cy(channel, "test")
+        await manager.send_as_persona(channel, "test")
 
         _, kwargs = wh.send.call_args
-        assert kwargs["avatar_url"] == mock_config.cy_avatar_url
+        assert kwargs["avatar_url"] == mock_config.bot_avatar_url
 
     @pytest.mark.asyncio
     async def test_sends_message_content(self, manager):
         wh = _make_webhook()
         channel = _make_channel(channel_id=12, existing_webhooks=[wh])
 
-        await manager.send_as_cy(channel, "my message content")
+        await manager.send_as_persona(channel, "my message content")
 
         _, kwargs = wh.send.call_args
         assert kwargs["content"] == "my message content"
@@ -222,7 +226,7 @@ class TestSendAsCy:
         wh = _make_webhook()
         channel = _make_channel(channel_id=13, existing_webhooks=[wh])
 
-        await manager.send_as_cy(channel, "text")
+        await manager.send_as_persona(channel, "text")
 
         _, kwargs = wh.send.call_args
         assert kwargs.get("wait") is True
@@ -246,7 +250,7 @@ class TestCleanup:
 
     @pytest.mark.asyncio
     async def test_cleanup_finds_and_deletes_uncached_webhook(self, manager):
-        wh = _make_webhook(name=WEBHOOK_NAME)
+        wh = _make_webhook(name=TEST_WEBHOOK_NAME)
         channel = _make_channel(channel_id=21, existing_webhooks=[wh])
 
         await manager.cleanup(channel)

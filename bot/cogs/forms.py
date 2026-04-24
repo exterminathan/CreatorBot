@@ -1,4 +1,4 @@
-"""Forms slash commands for CyBot.
+"""Forms slash commands.
 
 Discord-side features (what regular users can interact with):
   /form submit [form_name]  — Open a modal to fill out a form
@@ -18,7 +18,7 @@ from discord import app_commands
 from bot.forms_manager import build_modal, MAX_FIELDS
 
 if TYPE_CHECKING:
-    from bot.main import CyBot
+    from bot.main import CreatorBot
 
 log = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ class FormsCog(discord.ext.commands.Cog):
 
     form = app_commands.Group(name="form", description="Submit or list available forms")
 
-    def __init__(self, bot: CyBot):
+    def __init__(self, bot: CreatorBot):
         self.bot = bot
 
     def _get_available_forms(self, interaction: discord.Interaction) -> list[dict]:
@@ -121,5 +121,5 @@ class FormsCog(discord.ext.commands.Cog):
         ][:25]
 
 
-async def setup(bot: CyBot):
+async def setup(bot: CreatorBot):
     await bot.add_cog(FormsCog(bot))
