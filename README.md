@@ -1,20 +1,62 @@
 # CreatorBot
 
-Discord bot framework that posts AI-generated messages as a configurable persona. The bot speaks via channel webhooks so messages appear to come from a regular user (with your chosen display name and avatar) rather than a bot. Generations are powered by Google Gemini; persistent state lives in a single JSON file (optionally backed by Google Cloud Storage); deployment targets Google Cloud Run.
+[![Tests](https://github.com/exterminathan/CreatorBot/actions/workflows/tests.yml/badge.svg)](https://github.com/exterminathan/CreatorBot/actions/workflows/tests.yml)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/exterminathan/CreatorBot)](https://github.com/exterminathan/CreatorBot/commits/main)
 
-Fork it, fill in two configuration files, run two scripts, and you have your own persona bot in a Discord server.
+Fork this, fill in two config files, and you have a Discord bot that **speaks as any persona** — messages appear to come from a regular user via webhooks, not a bot account. Powered by Google Gemini, deployed to Cloud Run, and manageable from a browser panel.
+
+---
+
+## Table of Contents
+
+- [Demo](#demo)
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Configuring Your Persona](#configuring-your-persona)
+- [Running Locally](#running-locally)
+- [Slash Commands](#slash-commands)
+- [Web Admin Panel](#web-admin-panel)
+- [Optional: GCS-Backed State](#optional-gcs-backed-persistent-state)
+- [Architecture](#architecture)
+- [Testing](#testing)
+- [Monitoring](#monitoring)
+- [License](#license)
+
+---
+
+## Demo
+
+<!-- Add a screenshot or GIF of the bot posting in Discord here -->
+<!-- Suggested: screenshot of a webhook message in chat alongside the /bot newpost command -->
+![Bot posting a message in Discord](docs/demo.png)
+
+---
 
 ## Features
 
-- AI-generated posts via `/bot newpost <prompt>` — the bot writes a message in your persona's voice, then posts via webhook
-- `@mention` interaction replies with per-user rate limiting
-- Full admin control panel (web UI, password-protected)
-- Role-based permissions, exclusion lists, slang dictionary, channel permissions
-- Moderation commands (`/mod kick`, `/mod timeout`, `/mod ban`, `/mod purge`, welcome messages)
+**AI & Persona**
+- AI-generated posts via `/bot newpost <prompt>` — writes in your persona's voice and posts via webhook
+- Preview responses before sending with `/bot preview_post` (ephemeral, no webhook post)
+- Post raw messages as the persona with `/bot say_raw` (bypasses AI entirely)
+- `@mention` replies with per-user rate limiting
+
+**Community**
 - Giveaways (`/giveaway start`, auto-end, reroll, winner selection)
-- Forms (user-submitted modals, configurable via web UI)
+- Forms — user-submitted modals, configurable via web UI (`/form list`, `/form submit`)
+- Moderation commands: kick, ban, timeout, unban, purge, welcome messages
+
+**Infrastructure**
+- Full web admin panel — browser UI, password-protected, accessible at `/admin`
 - Kill switch (`/bot disable`) to immediately stop all public responses
+- Role-based permissions, channel exclusion lists, and a custom slang dictionary
+- GCS-backed persistent state (optional — falls back to local disk automatically)
 - Structured logs on Cloud Run, plain-text logs locally
+
+---
 
 ## Prerequisites
 
@@ -25,7 +67,9 @@ Fork it, fill in two configuration files, run two scripts, and you have your own
 - Python 3.12+ for local development and the bundled setup scripts
 - Bash (macOS/Linux, or Git Bash/WSL on Windows) for running `scripts/*.sh`
 
-## Quick start
+---
+
+## Quick Start
 
 ```bash
 # 1. Clone
@@ -52,6 +96,8 @@ Future redeploys after code changes:
 scripts/update.sh
 ```
 
+---
+
 ## Configuration
 
 All per-deployment customization lives in exactly two files:
@@ -72,7 +118,9 @@ Generate an invite URL from the Developer Portal → OAuth2 → URL Generator. R
 
 Also enable **Message Content Intent** and **Server Members Intent** under Bot → Privileged Gateway Intents.
 
-## Configuring your persona
+---
+
+## Configuring Your Persona
 
 Edit `data/persona.json` to define who the bot is — their bio, writing style, vocabulary, known facts, and example messages. The AI uses this to stay in character.
 
@@ -87,18 +135,22 @@ Edit `data/persona.json` to define who the bot is — their bio, writing style, 
 }
 ```
 
-For personal/private persona content you don't want committed, save it as `data/persona.local.json` — the loader prefers that file over `persona.json` if it exists (gitignored by default).
+For personal or private persona content you don't want committed, save it as `data/persona.local.json` — the loader prefers that file over `persona.json` if it exists (gitignored by default).
 
-## Running locally
+---
+
+## Running Locally
 
 ```bash
 pip install -r requirements.txt
 python -m bot.main
 ```
 
-The bot connects to Discord and also starts a local web server (default port 8080) with a health-check endpoint and the admin control panel at `/admin`.
+The bot connects to Discord and starts a local web server on port 8080 with a health-check endpoint and the admin panel at `/admin`.
 
-## Slash commands
+---
+
+## Slash Commands
 
 The root group name is configurable via `COMMAND_GROUP_NAME` in `config.py` (default: `bot`). Examples below assume the default.
 
@@ -122,14 +174,24 @@ The root group name is configurable via `COMMAND_GROUP_NAME` in `config.py` (def
 | `/form list` | Show forms the user can fill out |
 | `/form submit <name>` | Open the form modal |
 
-## Optional: GCS-backed persistent state
+---
 
-By default, the bot's runtime state (active channels, admins, giveaways, etc.) persists to `data/config.json` on local disk. This works fine for single-instance Cloud Run, but if you want state to survive container recreation cleanly — or run multiple replicas — point it at Google Cloud Storage:
+## Web Admin Panel
+
+The bot runs a password-protected browser UI at `/admin` (port 8080 locally; same path on the Cloud Run service URL in production). From the panel you can manage active channels, configure forms, adjust permissions, and monitor bot state — no command line needed after initial setup.
+
+---
+
+## Optional: GCS-Backed Persistent State
+
+By default, the bot's runtime state (active channels, admins, giveaways, etc.) persists to `data/config.json` on local disk. This works fine for single-instance Cloud Run, but if you want state to survive container recreation — or run multiple replicas — point it at Google Cloud Storage:
 
 1. Set `CONFIG_BUCKET = "your-bucket-name"` in `config.py`
 2. Re-run `scripts/setup.sh` — it will create the bucket and grant the service account access
 
 The bot auto-falls back to local disk if GCS is unreachable at startup.
+
+---
 
 ## Architecture
 
@@ -155,6 +217,8 @@ creatorbot/
 └── requirements.txt
 ```
 
+---
+
 ## Testing
 
 ```bash
@@ -162,6 +226,8 @@ pytest tests/ -v
 ```
 
 Tests run fully offline — no Discord connection, no Gemini calls, no GCS bucket needed. See `tests/README.md` for details.
+
+---
 
 ## Monitoring
 
@@ -174,6 +240,8 @@ gcloud run services describe $CLOUD_RUN_SERVICE --region $GCP_REGION
 ```
 
 Substitute `$CLOUD_RUN_SERVICE` and `$GCP_REGION` with your values from `config.py`, or `eval "$(python3 scripts/_load_config.py)"` first.
+
+---
 
 ## License
 
