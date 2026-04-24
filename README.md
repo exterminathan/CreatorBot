@@ -42,13 +42,13 @@ Define who your bot is directly from the browser. Set the **display name**, **bi
 
 ![Channel matrix](docs/channels.png)
 
-Assign a role to every channel from one table. Toggle **POST** to allow the bot to generate and send messages there, and **@CY** to enable mention-triggered replies. Designate exactly one channel each as the **default** post target, **bot log**, **mod log**, and **welcome** channel using the radio buttons. All changes take effect immediately.
+Assign a role to every channel from one table. Toggle **POST** to allow the bot to generate and send messages there, and **@mention** to enable mention-triggered replies. Designate exactly one channel each as the **default** post target, **bot log**, **mod log**, and **welcome** channel using the radio buttons. All changes take effect immediately.
 
 ### Role Permissions
 
 ![Role permissions](docs/permissions.png)
 
-Control who can do what with a per-role permission matrix. Grant or deny each role access to mention-triggered replies (**@CY**), bot post commands (**/CY**), moderation commands (**/MOD**), and audit log viewing (**VIEW LOGS**). The **COOLDOWN** column toggles per-user rate limiting for that role. The `@everyone` row is locked by default; all other roles can be freely configured or removed.
+Control who can do what with a per-role permission matrix. Grant or deny each role access to mention-triggered replies, bot post commands, moderation commands, and audit log viewing. The **COOLDOWN** column toggles per-user rate limiting for that role. The `@everyone` row is locked by default; all other roles can be freely configured or removed.
 
 ### Giveaways
 
