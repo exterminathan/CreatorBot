@@ -384,8 +384,9 @@ class CyBot(commands.Bot):
         if not chperms.get("can_interact", True):
             return
         # If specific interaction channels are configured, restrict to them
+        # Compare as strings to avoid 64-bit Discord snowflake integer precision loss
         interaction_channels = isettings.get("channel_ids", [])
-        if interaction_channels and message.channel.id not in interaction_channels:
+        if interaction_channels and str(message.channel.id) not in {str(c) for c in interaction_channels}:
             return
         # Must mention the bot
         if self.user not in message.mentions:
@@ -440,7 +441,7 @@ class CyBot(commands.Bot):
             text = self._fallback_response()
             mention = f"<@{message.author.id}>"
             text = f"{mention} {text}"
-            if message.channel.id in self.cfg.active_channels:
+            if str(message.channel.id) in {str(c) for c in self.cfg.active_channels}:
                 await self.webhooks.send_as_cy(message.channel, text)
             else:
                 await message.reply(text, mention_author=False)
@@ -479,7 +480,8 @@ class CyBot(commands.Bot):
         text = f"{mention} {text}"
 
         # Post via webhook so it appears as Cy
-        if message.channel.id in self.cfg.active_channels:
+        # Compare as strings to avoid 64-bit Discord snowflake integer precision loss
+        if str(message.channel.id) in {str(c) for c in self.cfg.active_channels}:
             await self.webhooks.send_as_cy(message.channel, text)
         else:
             await message.reply(text, mention_author=False)

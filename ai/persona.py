@@ -98,10 +98,13 @@ class Persona:
         if not template:
             template = DEFAULT_TEMPLATE
 
+        facts_text = self._format_facts()
+        video_lines_text = self._format_video_lines()
         replacements = {
             "name": self.name,
             "bio": f"Bio: {self.bio}" if self.bio else "",
-            "facts": self._format_facts(),
+            "facts": facts_text,
+            "topics": facts_text,  # alias used in some custom templates
             "writing_style": f"Writing style: {self.writing_style}" if self.writing_style else "",
             "vocabulary": (
                 f"Vocabulary that subtly colors how {self.name} speaks "
@@ -109,7 +112,8 @@ class Persona:
                 + ", ".join(self.vocabulary)
             ) if self.vocabulary else "",
             "example_messages": self._format_examples(),
-            "video_lines": self._format_video_lines(),
+            "video_lines": video_lines_text,
+            "transcript_excerpts": video_lines_text,  # alias used in some custom templates
         }
 
         result = template

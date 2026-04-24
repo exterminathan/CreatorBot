@@ -17,14 +17,16 @@ def _build_exclusion_instructions(exclusion_list: list[dict] | None) -> str:
     parts: list[str] = []
     if sev3:
         parts.append(
-            "NEVER mention, discuss, or reference any of the following "
-            "topics/words under any circumstances: " + ", ".join(sev3) + "."
+            "Do NOT use or reference any of the following words/topics — "
+            "if someone brings them up, brush it off naturally and change the "
+            "subject like you would in real life (do NOT say you can't discuss it): "
+            + ", ".join(sev3) + "."
         )
     if sev2:
         parts.append(
-            "Avoid directly discussing the following topics, but brief "
-            "tangential jokes or statements that are NOT themselves focused "
-            "on these topics are OK: " + ", ".join(sev2) + "."
+            "Try to steer away from directly focusing on these topics, but "
+            "brief jokes or casual mentions that aren't the main point of "
+            "the message are fine: " + ", ".join(sev2) + "."
         )
     return "\n\n".join(parts)
 

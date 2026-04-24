@@ -2110,7 +2110,7 @@ function fmtDuration(secs) {
 async function saveGiveawaySettings() {
   const chanId = document.getElementById('giveaway-default-channel').value || null;
   const roleRaw = document.getElementById('giveaway-manager-roles').value.trim();
-  const roleIds = roleRaw ? roleRaw.split(/\s+/).filter(Boolean) : [];
+  const roleIds = roleRaw ? roleRaw.split(/\\s+/).filter(Boolean) : [];
   const r = await api('PUT', '/api/giveaway-settings', {
     default_channel_id: chanId || null,
     manager_role_ids: roleIds,

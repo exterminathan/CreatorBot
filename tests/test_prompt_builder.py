@@ -42,12 +42,12 @@ class TestBuildExclusionInstructions:
 
     def test_severity2_produces_avoid_instruction(self):
         result = _build_exclusion_instructions([{"topic": "politics", "severity": 2}])
-        assert "Avoid directly discussing" in result
+        assert "steer away" in result
         assert "politics" in result
 
     def test_severity3_produces_never_instruction(self):
         result = _build_exclusion_instructions([{"topic": "drugs", "severity": 3}])
-        assert "NEVER" in result
+        assert "Do NOT" in result
         assert "drugs" in result
 
     def test_mixed_severities_produce_both_sections(self):
@@ -56,15 +56,15 @@ class TestBuildExclusionInstructions:
             {"topic": "politics", "severity": 2},
         ]
         result = _build_exclusion_instructions(exclusions)
-        assert "NEVER" in result
+        assert "Do NOT" in result
         assert "violence" in result
-        assert "Avoid directly discussing" in result
+        assert "steer away" in result
         assert "politics" in result
 
     def test_missing_severity_defaults_to_3(self):
         """Entries without a 'severity' key should default to severity 3 (block)."""
         result = _build_exclusion_instructions([{"topic": "slur"}])
-        assert "NEVER" in result
+        assert "Do NOT" in result
         assert "slur" in result
 
 
