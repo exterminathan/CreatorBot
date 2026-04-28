@@ -33,3 +33,4 @@ __pycache__/
 # Local backup data (keep scripts under backups/scripts/ tracked)
 /backups/firestore/
 /backups/gcs/
+/backups/*.tar.gz
