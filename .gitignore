@@ -29,6 +29,7 @@ __pycache__/
 /bucket_hierarchy.txt
 /.claude/
 /RENAME_AND_PUBLISH.md
+/docs/gcp-migrate/
 
 # Local backup data (keep scripts under backups/scripts/ tracked)
 /backups/firestore/
